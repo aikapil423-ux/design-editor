@@ -46,6 +46,17 @@ const LIGHT_OPS = [
   ['highlights', 'Highlights', -100, 100, 1], ['shadows', 'Shadows', -100, 100, 1], ['whites', 'Whites', -100, 100, 1],
   ['blacks', 'Blacks', -100, 100, 1], ['gamma', 'Gamma', 0.2, 4, 0.01], ['brilliance', 'Brilliance', -100, 100, 1],
 ];
+const LIGHT_DESC = {
+  exposure: 'Brightness of the whole image, captured by the sensor',
+  brightness: 'Lighten or darken the entire photo',
+  contrast: 'Difference between the darkest and brightest areas',
+  highlights: 'Recover or deepen the brightest parts',
+  shadows: 'Lift or crush the darkest parts',
+  whites: 'Set the very brightest white point',
+  blacks: 'Set the very darkest black point',
+  gamma: 'Mid-tone brightness without clipping',
+  brilliance: 'Perceptual glow in mid-tones',
+};
 const COLOR_OPS = [
   ['temperature', 'Temperature', -100, 100, 1], ['tint', 'Tint', -100, 100, 1], ['saturation', 'Saturation', -100, 100, 1],
   ['vibrance', 'Vibrance', -100, 100, 1], ['hue', 'Hue', -180, 180, 1], ['intensity', 'Color Intensity', -100, 100, 1],
@@ -72,16 +83,22 @@ const cloneJSON = (o) => { try { return JSON.parse(JSON.stringify(o)); } catch {
 /* ===========================================================================
    SMALL UI PRIMITIVES
    =========================================================================== */
-function AdjSlider({ label, value, min, max, step, onChange, onReset, fmt, onCommit }) {
+function AdjSlider({ label, value, min, max, step, onChange, onReset, fmt, onCommit, desc }) {
   const commit = () => { if (onCommit) onCommit(); };
+  const wheel = (e) => {
+    e.preventDefault();
+    const dir = e.deltaY < 0 ? 1 : -1;
+    const nv = value + dir * ((step || 1) * (e.shiftKey ? 5 : 1));
+    onChange(Math.max(min, Math.min(max, Math.round(nv * 100) / 100)));
+  };
   return (
     <div className="ped-slider">
       <div className="ped-slider-head">
-        <span className="ped-lbl">{label}</span>
+        {desc ? <span className="ped-hint-b" data-hint={desc}>{label}</span> : <span className="ped-lbl">{label}</span>}
         <span className="ped-val">
           <input className="ped-num" type="number" min={min} max={max} step={step} value={Math.round(value * 100) / 100}
             onChange={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) onChange(Math.max(min, Math.min(max, v))); }}
-            onBlur={commit} />
+            onBlur={commit} onKeyDown={(e) => e.key === 'Enter' && e.target.blur()} />
           <button className="ped-reset" title="Reset (double-click slider)" onClick={() => { onReset(); commit(); }}>↺</button>
         </span>
       </div>
@@ -89,10 +106,14 @@ function AdjSlider({ label, value, min, max, step, onChange, onReset, fmt, onCom
         onInput={(e) => onChange(parseFloat(e.target.value))}
         onPointerUp={commit}
         onPointerCancel={commit}
-        onDoubleClick={() => { onReset(); commit(); }} />
+        onDoubleClick={() => { onReset(); commit(); }}
+        onWheel={wheel} />
       {fmt && <span className="ped-fmt">{fmt(value)}</span>}
     </div>
   );
+}
+function ResetAll({ onReset }) {
+  return <button className="ped-reset-all" onClick={onReset}>↺ Reset all</button>;
 }
 function ZExpando({ label, children, icon }) {
   const [open, setOpen] = useState(true);
@@ -115,7 +136,7 @@ function SegT({ opts, value, onChange, small }) {
    PRO EDITOR
    =========================================================================== */
 export default function ProEditor({ params }) {
-  const { navigate, notify, upsertProject, addAI } = useApp();
+  const { navigate, notify, upsertProject, addAI, profile, projects } = useApp();
 
   const isVideoInit = useMemo(() => !!params.src && params.src.startsWith('blob:') || params.kind === 'video', [params]);
   const srcUrl = params.src || params.preview || null;
@@ -187,13 +208,31 @@ export default function ProEditor({ params }) {
   const [wave, setWave] = useState([]);
   const [timelineZoom, setTimelineZoom] = useState(8);
 
+  /* ---- workspace UI state ---- */
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [toolQ, setToolQ] = useState('');
+  const [favTools, setFavTools] = useState(() => { try { return JSON.parse(localStorage.getItem('ped_fav_tools') || '[]'); } catch { return []; } });
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [paletteQ, setPaletteQ] = useState('');
+  const [palIdx, setPalIdx] = useState(0);
+  const [notifOpen, setNotifOpen] = useState(false);
+  const [savedIdx, setSavedIdx] = useState(null);
+  const [handOn, setHandOn] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
+  const [gridOn, setGridOn] = useState(false);
+  const [rulersOn, setRulersOn] = useState(false);
+  const [guidesOn, setGuidesOn] = useState(false);
+  const [snapOn, setSnapOn] = useState(false);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const panRef = useRef({ x: 0, y: 0 });
+
   // ---- export options -----------------------------------------------------
   const [expOpts, setExpOpts] = useState({ fmt: 'png', quality: 92, resW: 1080, resH: 1080, fps: 30, crf: 20, preset: 'original' });
 
   /* ---- mirror live state for the render loop ---- */
   useEffect(() => {
-    stateRef.current = { adjust, curves, filters, effects, items, crop, maskCv: maskRef.current || maskCv, maskUi, brushUi, compare, holdOrig, zoom, retouch, mode, wbPick };
-  }, [adjust, curves, filters, effects, items, crop, maskCv, maskUi, brushUi, compare, holdOrig, zoom, retouch, mode, wbPick]);
+    stateRef.current = { adjust, curves, filters, effects, items, crop, maskCv: maskRef.current || maskCv, maskUi, brushUi, compare, holdOrig, zoom, retouch, mode, wbPick, pan, handOn, gridOn, rulersOn, guidesOn, snapOn };
+  }, [adjust, curves, filters, effects, items, crop, maskCv, maskUi, brushUi, compare, holdOrig, zoom, retouch, mode, wbPick, pan, handOn, gridOn, rulersOn, guidesOn, snapOn]);
 
   /* ---- source loading ---- */
   useEffect(() => {
@@ -324,7 +363,8 @@ export default function ProEditor({ params }) {
     data.saved = Date.now();
     try { localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(data)); } catch { }
     setSavedAt(Date.now());
-  }, [name, adjust, curves, filters, effects, items, crop]);
+    setSavedIdx(histIdx);
+  }, [name, adjust, curves, filters, effects, items, crop, histIdx]);
   useEffect(() => {
     if (!savedAt) return;
     const t = setTimeout(() => setSavedAt(null), 1800);
@@ -447,6 +487,7 @@ export default function ProEditor({ params }) {
     const fitS = Math.max(0.02, Math.min((cw - 24) / W, (ch - 24) / H));
     let s = fitS, ox = (cw - W * s) / 2, oy = (ch - H * s) / 2;
     if (st.zoom > 0) { s = (st.zoom / 100) * fitS; ox = (cw - W * s) / 2; oy = (ch - H * s) / 2; }
+    ox += st.pan ? st.pan.x : 0; oy += st.pan ? st.pan.y : 0;
     const drawProc = () => {
       const proc = P.renderEdits(base, st.adjust, { curves: st.curves, filters: st.filters, effects: st.effects, maskCanvas: st.maskUi.visible ? (st.maskCv || null) : null });
       P.drawOverlays(proc.getContext('2d'), W, H, st.effects);
@@ -466,6 +507,8 @@ export default function ProEditor({ params }) {
       ctx.restore();
       ctx.strokeStyle = '#fff'; ctx.lineWidth = 2 / s;
       ctx.beginPath(); ctx.moveTo(splitX, 0); ctx.lineTo(splitX, H); ctx.stroke();
+      ctx.fillStyle = '#fff';
+      ctx.beginPath(); ctx.arc(splitX, H / 2, 6 / s, 0, 7); ctx.fill();
     } else if (st.compare.mode === 'side') {
       const proc = showOrig ? srcCanvasRef.current : drawProc();
       ctx.fillStyle = '#0a0c12'; ctx.fillRect(0, 0, W, H);
@@ -478,31 +521,86 @@ export default function ProEditor({ params }) {
       if (!showOrig) drawItems(ctx, W, H, st.items);
     }
     if (st.crop.on) drawCropOverlay(ctx, W, H, st.crop, s);
+    if (st.guidesOn && st.compare.mode === 'off' && !showOrig) {
+      ctx.strokeStyle = 'rgba(255,90,90,0.75)'; ctx.lineWidth = 1 / s; ctx.setLineDash([6 / s, 5 / s]);
+      ctx.beginPath(); ctx.moveTo(W / 2, 0); ctx.lineTo(W / 2, H); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, H / 2); ctx.lineTo(W, H / 2); ctx.stroke();
+      ctx.setLineDash([]);
+      [W / 3, 2 * W / 3].forEach((gx) => { ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke(); });
+      [H / 3, 2 * H / 3].forEach((gy) => { ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke(); });
+    }
     if (st.maskCv && st.maskUi.visible && st.leftTab === 'mask' && !showOrig) {
       ctx.save(); ctx.globalAlpha = 0.55; ctx.drawImage(st.maskCv, 0, 0, W, H); ctx.restore();
     }
     ctx.restore();
-    ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = '11px Inter, sans-serif';
-    ctx.fillText(`${Math.round(s * 100)}%`, 10, 16);
+    if (st.gridOn) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.05)'; ctx.lineWidth = 1;
+      const gs = 32;
+      for (let gx = gs; gx < cw; gx += gs) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, ch); ctx.stroke(); }
+      for (let gy = gs; gy < ch; gy += gs) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(cw, gy + 0.5); ctx.stroke(); }
+    }
+    if (st.rulersOn) {
+      const R = 18, gs = 32;
+      ctx.fillStyle = 'rgba(14,16,24,0.9)';
+      ctx.fillRect(0, 0, cw, R); ctx.fillRect(0, 0, R, ch);
+      ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+      for (let gx = 0; gx < cw; gx += gs) { ctx.beginPath(); ctx.moveTo(gx + 0.5, 0); ctx.lineTo(gx + 0.5, gx % 160 === 0 ? R : R / 2); ctx.stroke(); }
+      for (let gy = 0; gy < ch; gy += gs) { ctx.beginPath(); ctx.moveTo(0, gy + 0.5); ctx.lineTo(gy % 160 === 0 ? R : R / 2, gy + 0.5); ctx.stroke(); }
+      ctx.fillStyle = 'rgba(255,255,255,0.35)'; ctx.font = '8px Inter, sans-serif';
+      for (let gx = 0; gx < cw; gx += 160) ctx.fillText(gx, gx + 3, 9);
+      for (let gy = 0; gy < ch; gy += 160) ctx.fillText(gy, 2, gy + 8);
+      ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = '11px Inter, sans-serif';
+      ctx.fillText(`${Math.round(s * 100)}%`, R + 8, ch - 8);
+      ctx.fillText(`${W}×${H}`, R + 8, 14);
+    } else {
+      ctx.fillStyle = 'rgba(255,255,255,0.75)'; ctx.font = '11px Inter, sans-serif';
+      ctx.fillText(`${Math.round(s * 100)}%`, 10, 16);
+      ctx.fillStyle = 'rgba(255,255,255,0.4)';
+      ctx.fillText(`${W}×${H}`, cw - ctx.measureText(`${W}×${H}`).width - 10, 16);
+    }
   }, []);
 
   useEffect(() => {
     if (!ready) return;
     cancelAnimationFrame(rafRef.current);
     rafRef.current = requestAnimationFrame(renderNow);
-  }, [adjust, curves, filters, effects, items, crop, maskCvStamp, maskUi, compare, holdOrig, zoom, mode, ready]);
+  }, [adjust, curves, filters, effects, items, crop, maskCvStamp, maskUi, compare, holdOrig, zoom, mode, ready, pan, gridOn, rulersOn, guidesOn]);
 
-  /* ---- keyboard ---- */
+  /* ---- keyboard shortcuts ---- */
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || '').toLowerCase();
       const typing = tag === 'input' || tag === 'textarea' || tag === 'select';
-      if (e.key === ' ' && !typing) { e.preventDefault(); setHoldOrig(true); const up = () => setHoldOrig(false); window.addEventListener('keyup', up, { once: true }); }
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); }
+      if (e.key === 'Escape') { setPaletteOpen(false); setNotifOpen(false); return; }
+      const mod = e.ctrlKey || e.metaKey;
+      if (typing) return;
+      if (mod && e.key.toLowerCase() === 'k') { e.preventDefault(); setPaletteOpen((v) => !v); return; }
+      if (mod && e.key.toLowerCase() === 's') { e.preventDefault(); autosave(); setSavedIdx(histIdx); notify('Project saved ✓'); return; }
+      if (mod && e.key.toLowerCase() === 'e') { e.preventDefault(); setExportOpen(true); return; }
+      if (mod && (e.key === '+' || e.key === '=')) { e.preventDefault(); setZoom((z) => (z === 0 ? 100 : Math.min(300, z * 1.25))); return; }
+      if (mod && e.key === '-') { e.preventDefault(); setZoom((z) => (z === 0 ? 75 : Math.max(25, z * 0.8))); return; }
+      if (mod && e.key === '0') { e.preventDefault(); setZoom(0); setPan({ x: 0, y: 0 }); panRef.current = { x: 0, y: 0 }; return; }
+      if (mod && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
+      if (e.key.toLowerCase() === 'h') { setHandOn((v) => !v); return; }
+      if (e.key === ' ') { e.preventDefault(); setHoldOrig(true); const up = () => setHoldOrig(false); window.addEventListener('keyup', up, { once: true }); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [undo, redo]);
+  }, [undo, redo, autosave, histIdx]);
+
+  /* ---- paste image from clipboard ---- */
+  useEffect(() => {
+    const onPaste = (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      if (mode !== 'photo' || busyAI) return;
+      const it = Array.from(e.clipboardData && e.clipboardData.items || []).find((i) => i.type && i.type.startsWith('image/'));
+      if (it) { const f = it.getAsFile(); if (f) { notify('Image pasted from clipboard'); loadLocalFile(f); } }
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+    // eslint-disable-next-line
+  }, [mode, busyAI]);
 
   /* ---- history init + quick actions ---- */
   useEffect(() => {
@@ -527,7 +625,8 @@ export default function ProEditor({ params }) {
     const fitS = Math.max(0.02, Math.min((cw - 24) / W, (ch - 24) / H));
     const st = stateRef.current;
     const s = st.zoom > 0 ? (st.zoom / 100) * fitS : fitS;
-    const ox = (cw - W * s) / 2, oy = (ch - H * s) / 2;
+    let ox = (cw - W * s) / 2, oy = (ch - H * s) / 2;
+    ox += st.pan ? st.pan.x : 0; oy += st.pan ? st.pan.y : 0;
     return { x: (e.clientX - rect.left - ox) / s, y: (e.clientY - rect.top - oy) / s };
   };
   const hitItem = (x, y) => {
@@ -604,6 +703,14 @@ export default function ProEditor({ params }) {
       const st = stateRef.current;
       const pt = toSource(e);
       const x = Math.max(0, Math.min(base.width, pt.x)), y = Math.max(0, Math.min(base.height, pt.y));
+      if (st.handOn || e.shiftKey) {
+        pointerRef.current = { down: true, pan: { sx: e.clientX, sy: e.clientY, px: panRef.current.x, py: panRef.current.y } };
+        return;
+      }
+      if (st.compare.mode === 'split' && Math.abs(pt.x - st.compare.split * base.width) < 14) {
+        pointerRef.current = { down: true, splitDrag: true };
+        return;
+      }
       pointerRef.current = { x, y, moved: false, down: true, it: null };
       if (st.crop.on) {
         const handle = cropHandleAt(pt.x, pt.y);
@@ -629,16 +736,33 @@ export default function ProEditor({ params }) {
     const move = (e) => {
       const pr = pointerRef.current;
       const st = stateRef.current;
+      const cvx = canvasRef.current;
       if (!pr || !pr.down) {
-        if (st.crop.on && canvasRef.current) {
-          const cp = toSource(e);
-          const hd = cropHandleAt(cp.x, cp.y);
-          canvasRef.current.style.cursor = hd ? (CROP_CURSOR[hd] || 'move') : 'default';
+        if (cvx) {
+          let cur = 'default';
+          if (st.handOn) cur = 'grab';
+          else if (st.crop.on) { const cp = toSource(e); const hd = cropHandleAt(cp.x, cp.y); cur = hd ? (CROP_CURSOR[hd] || 'move') : cur; }
+          else if (st.compare.mode === 'split') { const cp = toSource(e); if (Math.abs(cp.x - st.compare.split * baseCanvasRef.current.width) < 14) cur = 'ew-resize'; }
+          if (st.leftTab === 'mask' && !st.crop.on) cur = 'crosshair';
+          else if (st.leftTab === 'retouch' && st.retouch.tool && !st.crop.on) cur = 'crosshair';
+          cvx.style.cursor = cur;
         }
+        return;
+      }
+      if (pr.pan) {
+        const nx = pr.pan.px + (e.clientX - pr.pan.sx), ny = pr.pan.py + (e.clientY - pr.pan.sy);
+        panRef.current = { x: nx, y: ny };
+        setPan({ x: nx, y: ny });
+        if (cvx) cvx.style.cursor = 'grabbing';
         return;
       }
       const base = baseCanvasRef.current;
       const pt = toSource(e);
+      if (pr.splitDrag) {
+        const W = base.width;
+        setCompare((c) => ({ ...c, split: Math.max(0.05, Math.min(0.95, pt.x / W)) }));
+        return;
+      }
       if (pr.cropData) {
         const r = dragCrop(pr.cropData, pt, base.width, base.height);
         pr.cropData.dragged = true;
@@ -647,7 +771,8 @@ export default function ProEditor({ params }) {
       }
       if (pr.it) {
         pr.moved = true;
-        setItems((its) => its.map((i) => i.id === pr.it.id ? { ...i, x: Math.max(0, Math.min(base.width, pt.x + pr.it.dx)), y: Math.max(0, Math.min(base.height, pt.y + pr.it.dy)) } : i));
+        const snap = (v) => st.snapOn ? Math.round(v / 16) * 16 : v;
+        setItems((its) => its.map((i) => i.id === pr.it.id ? { ...i, x: Math.max(0, Math.min(base.width, snap(pt.x + pr.it.dx))), y: Math.max(0, Math.min(base.height, snap(pt.y + pr.it.dy))) } : i));
       } else if (st.leftTab === 'mask' && !st.crop.on) { brushAt(pt.x, pt.y, false); }
       else if (st.leftTab === 'retouch' && st.retouch.tool && !st.crop.on) { brushAt(pt.x, pt.y, true); }
     };
@@ -656,6 +781,7 @@ export default function ProEditor({ params }) {
       if (pr && pr.moved && pr.it) takeSnap('Move');
       else if (pr && pr.cropData && pr.cropData.dragged) takeSnap('Crop');
       pointerRef.current = null;
+      if (canvasRef.current) canvasRef.current.style.cursor = stateRef.current.handOn ? 'grab' : 'default';
     };
     cv.addEventListener('pointerdown', down);
     window.addEventListener('pointermove', move);
@@ -1142,9 +1268,15 @@ export default function ProEditor({ params }) {
   }
 
   const sel = items.find((i) => i.id === selId);
+  const dirty = history.length > 1 && savedIdx !== histIdx;
+  const canUndo = histIdx > 0 && history.length > 0;
+  const canRedo = histIdx >= 0 && histIdx < history.length - 1;
+  const favSet = new Set(favTools);
+  const visibleTabs = LEFT_TABS.filter(([id, label]) => !toolQ || label.toLowerCase().includes(toolQ.toLowerCase()));
+  const avatarLetter = (profile && profile.name && profile.name.trim()) ? profile.name.trim()[0].toUpperCase() : 'C';
   const LEFT_TABS = [
-    ['adjust', 'Adjust', '☀️'], ['color', 'Color', '🎨'], ['curves', 'Curves', '📈'], ['wb', 'WB', '🌡'],
-    ['detail', 'Detail', '🔍'], ['optics', 'Optics', '🔮'], ['crop', 'Crop', '✂️'], ['filters', 'Filters', '🎞'],
+    ['adjust', 'Adjust', '☀️'], ['color', 'Color', '🎨'], ['wb', 'WB', '🌡'], ['detail', 'Detail', '🔍'],
+    ['curves', 'Curves', '📈'], ['optics', 'Optics', '🔮'], ['crop', 'Crop', '✂️'], ['filters', 'Filters', '🎞'],
     ['fx', 'Effects', '💫'], ['vignette', 'Vignette', '◐'], ['ai', 'AI', '🤖'], ['mask', 'Mask', '🎭'],
     ['retouch', 'Retouch', '🧴'], ['text', 'Text', '🅰'], ['shapes', 'Shapes', '🔶'], ['stickers', 'Elements', '🎀'],
   ];
@@ -1156,48 +1288,150 @@ export default function ProEditor({ params }) {
 
   const maskPanelDims = { w: capsRef.current.w, h: capsRef.current.h };
 
+  const CMDS = [
+    { icon: '📂', name: 'Open image…', cat: 'File', run: () => { const el = document.getElementById('ped-file-input'); if (el) el.click(); } },
+    { icon: '💾', name: 'Save project', cat: 'File', run: () => { autosave(); notify('Project saved ✓'); } },
+    { icon: '⬇', name: 'Export image…', cat: 'File', run: () => setExportOpen(true) },
+    { icon: '↩', name: 'Undo', cat: 'Edit', run: undo },
+    { icon: '↪', name: 'Redo', cat: 'Edit', run: redo },
+    { icon: '📸', name: 'Take snapshot', cat: 'Edit', run: () => { takeSnap('Snapshot'); notify('Snapshot added to history'); } },
+    { icon: '✂️', name: 'Crop tool', cat: 'Tool', run: () => setLeftTab('crop') },
+    { icon: '☀️', name: 'Auto adjust', cat: 'Adjust', run: () => { const src = srcCanvasRef.current; if (!src) return notify('Open an image first', 'warn'); takeSnap('Auto adjust'); setAdjust((a) => ({ ...a, ...P.autoAdjust(src) })); notify('Auto adjusted ✓'); } },
+    { icon: '🔧', name: 'Tune adjustments', cat: 'Adjust', run: () => setLeftTab('adjust') },
+    { icon: '🤖', name: 'AI tools', cat: 'AI', run: () => setLeftTab('ai') },
+    { icon: '🪄', name: 'Remove background (AI)', cat: 'AI', run: () => runAI('bg-remove') },
+    { icon: '🖼', name: 'Upscale 2× (AI)', cat: 'AI', run: () => runAI('upscale') },
+    { icon: '✨', name: 'Enhance photo (AI)', cat: 'AI', run: () => runAI('enhance') },
+    { icon: '🔪', name: 'Sharpen (AI)', cat: 'AI', run: () => runAI('sharpen') },
+    { icon: '🅰', name: 'Add text', cat: 'Add', run: () => addItem('text') },
+    { icon: '🔷', name: 'Add rectangle', cat: 'Add', run: () => addItem('shape', 'rect') },
+    { icon: '🎀', name: 'Add sticker', cat: 'Add', run: () => addItem('sticker', null, null, '✨') },
+    { icon: '🗑', name: 'Delete selected object', cat: 'Edit', run: () => { if (!selId) return notify('Nothing selected', 'info'); setItems((its) => its.filter((i) => i.id !== selId)); setSelId(null); takeSnap('Delete object'); } },
+    { icon: '🗂', name: 'Layers panel', cat: 'Panel', run: () => setRightTab('layers') },
+    { icon: '🕘', name: 'History panel', cat: 'Panel', run: () => setRightTab('history') },
+    { icon: '💾', name: 'Presets panel', cat: 'Panel', run: () => setRightTab('presets') },
+    { icon: '🧭', name: 'Zoom to fit', cat: 'View', run: () => { setZoom(0); setPan({ x: 0, y: 0 }); panRef.current = { x: 0, y: 0 }; } },
+    { icon: '🔍', name: 'Zoom 100%', cat: 'View', run: () => setZoom(100) },
+    { icon: '🌐', name: 'Toggle grid', cat: 'View', run: () => setGridOn((v) => !v) },
+    { icon: '📏', name: 'Toggle rulers', cat: 'View', run: () => setRulersOn((v) => !v) },
+    { icon: '➕', name: 'Toggle guides', cat: 'View', run: () => setGuidesOn((v) => !v) },
+    { icon: '🧲', name: 'Toggle snapping', cat: 'View', run: () => setSnapOn((v) => !v) },
+    { icon: '✋', name: 'Toggle hand tool', cat: 'View', run: () => setHandOn((v) => !v) },
+    { icon: '◐', name: 'Toggle before / after', cat: 'View', run: () => setCompare((c) => ({ ...c, mode: c.mode === 'off' ? 'hold' : 'off' })) },
+    { icon: '⌂', name: 'Go home', cat: 'App', run: () => navigate('home') },
+    { icon: '🗂', name: 'My projects', cat: 'App', run: () => navigate('projects') },
+    { icon: '⚙', name: 'Settings', cat: 'App', run: () => navigate('settings') },
+  ].filter((c) => !paletteQ || c.name.toLowerCase().includes(paletteQ.toLowerCase()) || c.cat.toLowerCase().includes(paletteQ.toLowerCase()));
+
   return (
-    <div className="ped">
+    <div className="ped"
+      onDragOver={(e) => { if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) { e.preventDefault(); setDragOver(true); } }}
+      onDragLeave={(e) => { if (e.currentTarget === e.target) setDragOver(false); }}
+      onDrop={(e) => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f && mode === 'photo') { notify('Image dropped'); loadLocalFile(f); } }}>
+      <input id="ped-file-input" type="file" accept="image/*" hidden onChange={openLocalImage} />
       {/* ===== TOP BAR ===== */}
       <header className="ped-topbar">
-        <button className="ped-btn" title="Back" onClick={() => navigate('home')}>←</button>
+        <button className="ped-btn" title="Go Home" onClick={() => navigate('home')}>⌂</button>
+        <span className={`ped-dirty ${dirty ? 'on' : ''}`} title={dirty ? 'Unsaved changes' : 'All changes saved'} />
         <input className="ped-name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Project name" />
-        <span className={`ped-saved ${savedAt ? 'on' : ''}`}>{savedAt ? '💾 Saved' : 'Manual save'}</span>
+        <span className={`ped-saved ${savedAt ? 'on' : ''}`}>{savedAt ? 'Saved ✓' : (dirty ? 'Unsaved' : 'All changes saved')}</span>
         <span className="ped-top-sep" />
-        <button className="ped-btn" title="Undo (Ctrl+Z)" onClick={undo} disabled={histIdx <= 0}>↩</button>
-        <button className="ped-btn" title="Redo" onClick={redo} disabled={histIdx >= history.length - 1}>↪</button>
-        <button className="ped-btn" title="Save" onClick={() => { autosave(); notify('Project saved ✓'); }}>💾</button>
+        <button className="ped-cmd" onClick={() => setPaletteOpen(true)}>🔎<span>Search tools &amp; actions</span><kbd>Ctrl K</kbd></button>
+        <span className="ped-top-sep" />
+        <button className="ped-btn" title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>↩</button>
+        <button className="ped-btn" title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>↪</button>
+        <button className="ped-btn" title="Save (Ctrl+S)" onClick={() => { autosave(); notify('Project saved ✓'); }}>💾</button>
         <button className={`ped-btn ${compare.mode !== 'off' ? 'ped-btn-active' : ''}`} title="Before / After" onClick={() => setCompare((c) => ({ ...c, mode: c.mode === 'off' ? 'hold' : 'off' }))}>◐</button>
         <button className="ped-btn" title="Preview" onClick={() => { if (mode === 'video') setPlaying(!playing); else notify('Live preview — see the canvas ✓', 'info'); }}>{playing ? '⏸' : '▶'}</button>
         <button className="ped-btn" title="Share" onClick={share}>⇪</button>
         <button className="ped-btn ped-btn-primary" onClick={() => setExportOpen(true)}>⬇ Export</button>
+        <div className="ped-hd-right">
+          <button className={`ped-btn ${notifOpen ? 'ped-btn-active' : ''}`} title="Help &amp; shortcuts" onClick={() => setNotifOpen((v) => !v)}>?</button>
+          <button className="ped-avatar" title={profile && profile.name} onClick={() => navigate('settings')}>{avatarLetter}</button>
+          {notifOpen && (
+            <div className="ped-notif-pop">
+              <h5>Shortcuts</h5>
+              {[['Ctrl K', 'Command palette'], ['Ctrl S', 'Save'], ['Ctrl E', 'Export'], ['Ctrl Z / Ctrl Shift Z', 'Undo / Redo'], ['Space', 'Hold to see original'], ['H', 'Toggle hand / pan'], ['Ctrl + / − / 0', 'Zoom in / out / fit'], ['Esc', 'Close palettes']].map(([k, d]) => (
+                <div className="ped-notif-row" key={k}><kbd>{k}</kbd><span>{d}</span></div>
+              ))}
+              <button className="ped-notif-close" onClick={() => setNotifOpen(false)}>Got it</button>
+            </div>
+          )}
+        </div>
       </header>
+
+      {paletteOpen && (
+        <div className="ped-palette" onClick={() => setPaletteOpen(false)}>
+          <div className="ped-palette-box" onClick={(e) => e.stopPropagation()}>
+            <input autoFocus className="ped-palette-input" placeholder="Type a command or search…" value={paletteQ} onChange={(e) => { setPaletteQ(e.target.value); setPalIdx(0); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setPaletteOpen(false);
+                if (e.key === 'ArrowDown') { e.preventDefault(); setPalIdx((i) => (i + 1) % CMDS.length); }
+                if (e.key === 'ArrowUp') { e.preventDefault(); setPalIdx((i) => (i - 1 + CMDS.length) % CMDS.length); }
+                if (e.key === 'Enter') { const c = CMDS[Math.min(palIdx, CMDS.length - 1)]; if (c) { setPaletteOpen(false); c.run(); } }
+              }} />
+            <div className="ped-palette-list">
+              {CMDS.map((c, i) => (
+                <button key={c.name} className={`ped-palette-item ${palIdx === i ? 'on' : ''}`} onMouseEnter={() => setPalIdx(i)}
+                  onMouseDown={() => { setPaletteOpen(false); c.run(); }}>
+                  <span className="ped-palette-icon">{c.icon}</span><span>{c.name}</span><span className="ped-palette-cat">{c.cat}</span>
+                </button>
+              ))}
+            </div>
+            <div className="ped-palette-foot">
+              <span>↵ Run</span><span>↑↓ Navigate</span><span>Esc Close</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ===== WORKSPACE ===== */}
       <div className="ped-ws">
         {/* LEFT */}
-        <aside className="ped-left">
+        <aside className={`ped-left ${leftCollapsed ? 'closed' : ''}`}>
+          <div className="ped-left-head">
+            <button className="ped-collapse" title={leftCollapsed ? 'Expand tools' : 'Collapse tools'} onClick={() => setLeftCollapsed((v) => !v)}>{leftCollapsed ? '▸' : '◂'}</button>
+            {!leftCollapsed && <input className="ped-tool-search" placeholder="Search tools…" value={toolQ} onChange={(e) => setToolQ(e.target.value)} />}
+          </div>
+          {!leftCollapsed && favTools.length > 0 && (
+            <div className="ped-favs">
+              {LEFT_TABS.filter(([id]) => favSet.has(id)).map(([id, label, icon]) => (
+                <button key={id} className={`ped-fav ${leftTab === id ? 'on' : ''}`} onClick={() => setLeftTab(id)} title={label}><span>{icon}</span>{leftCollapsed ? '' : <small>{label}</small>}</button>
+              ))}
+            </div>
+          )}
           <div className="ped-tablist">
-            {LEFT_TABS.map(([id, label, icon]) => (
-              <button key={id} className={`ped-tab ${leftTab === id ? 'on' : ''}`} onClick={() => setLeftTab(id)} title={label}><span>{icon}</span><small>{label}</small></button>
-            ))}
+            {visibleTabs.map(([id, label, icon]) => {
+              const fav = favSet.has(id);
+              return (
+                <div key={id} className={`ped-tabrow ${leftTab === id ? 'on' : ''}`}>
+                  {!leftCollapsed && <button className={`ped-star ${fav ? 'on' : ''}`} title={fav ? 'Remove favorite' : 'Favorite tool'} onClick={() => {
+                    const next = fav ? favTools.filter((f) => f !== id) : [...favTools, id];
+                    setFavTools(next);
+                    try { localStorage.setItem('ped_fav_tools', JSON.stringify(next)); } catch { }
+                  }}>{fav ? '★' : '☆'}</button>}
+                  <button className={`ped-tab ${leftTab === id ? 'on' : ''}`} onClick={() => { setLeftTab(id); if (leftCollapsed) setLeftCollapsed(false); }} title={leftCollapsed ? label : ''}><span>{icon}</span>{leftCollapsed ? '' : <small>{label}</small>}</button>
+                </div>
+              );
+            })}
+            {!visibleTabs.length && <p className="ped-left-empty">No tools match “{toolQ}”.</p>}
           </div>
           <div className="ped-left-body">
-            {leftTab === 'adjust' && <LightPanel value={adjust} patch={setAdjustWrap(setAdjust)} onAutoAdjust={() => {
+            {leftTab === 'adjust' && <>{<ResetAll onReset={() => { takeSnap('Reset adjustments'); setAdjust(cloneJSON(P.DEFAULT_ADJUST())); notify('Adjustments reset ✓'); }} />}<LightPanel value={adjust} patch={setAdjustWrap(setAdjust)} onAutoAdjust={() => {
               const src = srcCanvasRef.current;
               if (!src) return;
               takeSnap('Auto adjust');
               setAdjust((a) => ({ ...a, ...P.autoAdjust(src) }));
               notify('Auto adjusted ✓', 'info');
-            }} />}
-            {leftTab === 'color' && <ColorPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Color')} />}
-            {leftTab === 'curves' && <CurvesPanel curves={curves} setCurves={setCurves} hist={histRef.current} takeSnap={takeSnap} />}
-            {leftTab === 'wb' && <WBPanel adjust={adjust} setAdjust={setAdjust} notify={notify} pick={wbPick} setPick={setWbPick} commit={() => takeSnap('White balance')} />}
-            {leftTab === 'detail' && <DetailPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Detail')} />}
-            {leftTab === 'optics' && <OpticsPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Optics')} />}
+            }} /></>}
+            {leftTab === 'color' && <><ResetAll onReset={() => { takeSnap('Reset color'); setAdjust((a) => ({ ...a, color: cloneJSON(P.DEFAULT_ADJUST().color) })); }} /><ColorPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Color')} /></>}
+            {leftTab === 'curves' && <><ResetAll onReset={() => { takeSnap('Reset curves'); setCurves({ rgb: [], r: [], g: [], b: [] }); }} /><CurvesPanel curves={curves} setCurves={setCurves} hist={histRef.current} takeSnap={takeSnap} /></>}
+            {leftTab === 'wb' && <><ResetAll onReset={() => { takeSnap('Reset white balance'); setAdjust((a) => ({ ...a, wb: cloneJSON(P.DEFAULT_ADJUST().wb) })); }} /><WBPanel adjust={adjust} setAdjust={setAdjust} notify={notify} pick={wbPick} setPick={setWbPick} commit={() => takeSnap('White balance')} /></>}
+            {leftTab === 'detail' && <><ResetAll onReset={() => { takeSnap('Reset detail'); setAdjust((a) => ({ ...a, detail: cloneJSON(P.DEFAULT_ADJUST().detail) })); }} /><DetailPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Detail')} /></>}
+            {leftTab === 'optics' && <><ResetAll onReset={() => { takeSnap('Reset optics'); setAdjust((a) => ({ ...a, optics: cloneJSON(P.DEFAULT_ADJUST().optics) })); }} /><OpticsPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Optics')} /></>}
             {leftTab === 'crop' && <CropPanel crop={crop} setCrop={setCrop} apply={applyCrop} setRatio={applyCropRatio} W={capsRef.current.w} H={capsRef.current.h} commit={() => takeSnap('Crop')} />}
-            {leftTab === 'filters' && <FiltersPanel filters={filters} setFilters={setFilters} takeSnap={takeSnap} />}
-            {leftTab === 'fx' && <EffectsPanel effects={effects} setEffects={setEffects} takeSnap={takeSnap} />}
+            {leftTab === 'filters' && <><ResetAll onReset={() => { takeSnap('Reset filters'); setFilters([]); }} /><FiltersPanel filters={filters} setFilters={setFilters} takeSnap={takeSnap} /></>}
+            {leftTab === 'fx' && <><ResetAll onReset={() => { takeSnap('Reset effects'); setEffects([]); }} /><EffectsPanel effects={effects} setEffects={setEffects} takeSnap={takeSnap} /></>}
             {leftTab === 'vignette' && <VignettePanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Vignette')} resetVg={() => { const d = P.DEFAULT_ADJUST().optics.vignette; setAdjust((a) => ({ ...a, optics: { ...a.optics, vignette: d } })); }} />}
             {leftTab === 'ai' && <AIPanel run={runAI} busy={busyAI} cancel={() => { cancelRef.current = true; }} />}
             {leftTab === 'mask' && <MaskPanel dims={maskPanelDims} ensure={ensureMask} clear={clearMask} apply={applyMaskEdits} ui={maskUi} setUi={setMaskUi} brush={brushUi} setBrush={setBrushUi} />}
@@ -1214,10 +1448,19 @@ export default function ProEditor({ params }) {
         {/* CENTER */}
         <div className="ped-center">
           <div className="ped-stagebar">
-            <button className={`ped-stagebar-btn ${zoom === 0 ? 'on' : ''}`} onClick={() => setZoom(0)}>Fit</button>
-            {[25, 50, 75, 100, 200].map((z) => <button key={z} className={`ped-stagebar-btn ${zoom === z ? 'on' : ''}`} onClick={() => setZoom(z)}>{z}%</button>)}
-            <button className="ped-stagebar-btn" onClick={() => setZoom((z) => (z === 0 ? 50 : Math.min(400, z * 1.25)))}>+</button>
-            <button className="ped-stagebar-btn" onClick={() => setZoom((z) => (z === 0 ? 60 : Math.max(25, z * 0.8)))}>−</button>
+            <button className={`ped-stagebar-btn ${zoom === 0 ? 'on' : ''}`} title="Fit (Ctrl+0)" onClick={() => { setZoom(0); setPan({ x: 0, y: 0 }); panRef.current = { x: 0, y: 0 }; }}>Fit</button>
+            <span className="ped-stagebar-zoom">
+              <button className="ped-stagebar-btn" onClick={() => setZoom((z) => (z === 0 ? 75 : Math.max(25, z * 0.8)))}>−</button>
+              <input className="ped-zoom-slider" type="range" min="25" max="300" step="5" title="Zoom" aria-label="Zoom" value={zoom === 0 ? 100 : zoom} onChange={(e) => setZoom(parseInt(e.target.value, 10))} />
+              <button className="ped-stagebar-btn" onClick={() => setZoom((z) => (z === 0 ? 100 : Math.min(300, z * 1.25)))}>+</button>
+              <span className="ped-zoom-label">{zoom === 0 ? 'Fit' : `${Math.round(zoom)}%`}</span>
+            </span>
+            <span className="ped-stagebar-spacer" />
+            <button className={`ped-stagebar-btn ${handOn ? 'on' : ''}`} title="Hand tool (H) — drag to pan" onClick={() => setHandOn((v) => !v)}>✋</button>
+            <button className={`ped-stagebar-btn ${gridOn ? 'on' : ''}`} title="Grid" onClick={() => setGridOn((v) => !v)}>▦</button>
+            <button className={`ped-stagebar-btn ${guidesOn ? 'on' : ''}`} title="Guides" onClick={() => setGuidesOn((v) => !v)}>▥</button>
+            <button className={`ped-stagebar-btn ${rulersOn ? 'on' : ''}`} title="Rulers" onClick={() => setRulersOn((v) => !v)}>📏</button>
+            <button className={`ped-stagebar-btn ${snapOn ? 'on' : ''}`} title="Snap" onClick={() => setSnapOn((v) => !v)}>🧲</button>
             <span className="ped-stagebar-spacer" />
             <button className="ped-stagebar-btn" title="Fullscreen" onClick={() => { const el = wrapRef.current; if (!fullscreen) { if (el.requestFullscreen) el.requestFullscreen(); setFullscreen(true); } else { if (document.exitFullscreen) document.exitFullscreen(); setFullscreen(false); } }}>⛶</button>
           </div>
@@ -1230,9 +1473,45 @@ export default function ProEditor({ params }) {
                 <canvas ref={canvasRef} className="ped-canvas ped-canvas-overlay" />
               </div>
             )}
+            {mode === 'photo' && !srcUrl && (
+              <div className={`ped-empty ${dragOver ? 'over' : ''}`}
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => { e.preventDefault(); e.stopPropagation(); setDragOver(false); const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0]; if (f) { notify('Image dropped'); loadLocalFile(f); } }}>
+                <span className="ped-empty-icon">🖼</span>
+                <h2>Start creating</h2>
+                <p>Drop an image anywhere, paste from clipboard, or pick one — then edit, enhance and export in style.</p>
+                <div className="ped-empty-btns">
+                  <button className="btn btn-primary" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}>📂 Open image</button>
+                  <button className="btn" onClick={() => addItem('text')}>🅰 Add text</button>
+                  <button className="btn" onClick={() => addItem('sticker', null, null, '✨')}>✨ Add sticker</button>
+                </div>
+                {projects && projects.slice(0, 4).map((p) => (
+                  <button key={p.id} className="ped-recent-chip" onClick={() => (p.type === 'video' ? navigate('video', {}) : navigate('photo', { src: p.thumbnail, name: p.name }))}>
+                    {p.name || 'Untitled'}
+                  </button>
+                ))}
+                <p className="ped-empty-hint">Tip: press <kbd>Ctrl</kbd>+<kbd>K</kbd> for the command palette · paste any image with Ctrl+V</p>
+              </div>
+            )}
             {mode === 'video' && !clips.length && <div className="ped-empty-stage"><span>🎬</span><p>Add clips to build your video — then grade, trim and export.</p>
               <label className="btn btn-sm btn-primary" style={{ display: 'inline-flex' }}>＋ Add Clips<input type="file" accept="video/*,image/*" multiple hidden onChange={addFiles} /></label>
             </div>}
+            {srcUrl && mode === 'photo' && !busyAI && (
+              <div className="ped-quickbar">
+                <button title="Open image" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}>📂</button>
+                <span className="ped-qb-sep" />
+                <button title="Add text" onClick={() => addItem('text')}>🅰</button>
+                <button title="Add shape" onClick={() => addItem('shape', 'rect')}>🔷</button>
+                <button title="Add sticker" onClick={() => addItem('sticker', null, null, '✨')}>🎀</button>
+                <span className="ped-qb-sep" />
+                <button title="AI tools" onClick={() => setLeftTab('ai')}>🤖</button>
+                <button title="Crop tool" onClick={() => setLeftTab('crop')}>✂️</button>
+                <span className="ped-qb-sep" />
+                <button title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>↩</button>
+                <button title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>↪</button>
+              </div>
+            )}
           </div>
           <div className="ped-comparebar">
             <span>Compare:</span>
@@ -1317,16 +1596,7 @@ export default function ProEditor({ params }) {
             <button className="btn btn-sm" onClick={() => { cancelRef.current = true; }}>Cancel</button>
           </div>
         </div>
-      )}
-
-      {/* empty photo actions */}
-      {mode === 'photo' && !srcUrl && (
-        <div className="ped-empty-actions">
-          <label className="btn btn-primary">📂 Open Image<input type="file" accept="image/*" hidden onChange={openLocalImage} /></label>
-          <button className="btn" onClick={() => addItem('text')}>🅰 Add Text</button>
-          <button className="btn" onClick={() => addItem('sticker', null, null, '✨')}>✨ Add Sticker</button>
-        </div>
-      )}
+)}
 
       <style>{`@keyframes pedorbs{0%,100%{transform:translateY(0) scale(1);opacity:.85}50%{transform:translateY(-7px) scale(1.15);opacity:1}}`}</style>
     </div>
@@ -1343,20 +1613,29 @@ export default function ProEditor({ params }) {
   }
   function openLocalImage(e) {
     const f = e.target.files && e.target.files[0];
+    if (f) loadLocalFile(f);
+    if (e.target) e.target.value = '';
+  }
+  function loadLocalFile(f) {
     if (!f) return;
+    if (!f.type.startsWith('image/')) { notify('That file is not an image', 'warn'); return; }
     const r = new FileReader();
     r.onload = () => {
       const img = new Image();
       img.onload = () => {
         const mx = 2400; const sc = Math.min(1, mx / Math.max(img.naturalWidth, img.naturalHeight));
-        const c = document.createElement('canvas'); c.width = img.naturalWidth * sc; c.height = img.naturalHeight * sc;
+        const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * sc); c.height = Math.round(img.naturalHeight * sc);
         c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
         srcCanvasRef.current = c; baseCanvasRef.current = c;
         histRef.current = P.buildHistogram(c);
         capsRef.current = { w: c.width, h: c.height, fullW: img.naturalWidth, fullH: img.naturalHeight };
         setCrop({ on: false, x: 0, y: 0, w: c.width, h: c.height, ratio: null, straighten: 0, flipH: false, flipV: false, rot: 0 });
-        renderNow(); notify('Image loaded');
+        setItems([]); setSelId(null); setHistory([]); setHistIdx(-1);
+        setPan({ x: 0, y: 0 }); panRef.current = { x: 0, y: 0 };
+        renderNow(); notify('Image loaded ✓');
+        setTimeout(() => takeSnap('Open'), 250);
       };
+      img.onerror = () => notify('Could not read that image', 'error');
       img.src = r.result;
     };
     r.readAsDataURL(f);
@@ -1377,7 +1656,7 @@ function LightPanel({ value, patch, onAutoAdjust, commit }) {
       </div>
       <ZExpando label="Light" icon="☀️">
         {LIGHT_OPS.map(([k, label, min, max, step]) => (
-          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} onCommit={commit} />
+          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} onCommit={commit} desc={LIGHT_DESC[k]} />
         ))}
       </ZExpando>
     </div>
