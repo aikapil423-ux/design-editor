@@ -1484,7 +1484,9 @@ export default function ProEditor({ params }) {
                 <div className="ped-empty-btns">
                   <button className="btn btn-primary" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}>📂 Open image</button>
                   <button className="btn" onClick={() => addItem('text')}>🅰 Add text</button>
-                  <button className="btn" onClick={() => addItem('sticker', null, null, '✨')}>✨ Add sticker</button>
+                  <button className="btn" onClick={() => addItem('shape', 'rect')}>🔷 Add shape</button>
+                  <button className="btn" onClick={() => addItem('sticker', null, null, '✨')}>🎀 Add sticker</button>
+                  <button className="btn" onClick={() => setLeftTab('ai')}>🤖 AI tools</button>
                 </div>
                 {projects && projects.slice(0, 4).map((p) => (
                   <button key={p.id} className="ped-recent-chip" onClick={() => (p.type === 'video' ? navigate('video', {}) : navigate('photo', { src: p.thumbnail, name: p.name }))}>
@@ -1497,22 +1499,22 @@ export default function ProEditor({ params }) {
             {mode === 'video' && !clips.length && <div className="ped-empty-stage"><span>🎬</span><p>Add clips to build your video — then grade, trim and export.</p>
               <label className="btn btn-sm btn-primary" style={{ display: 'inline-flex' }}>＋ Add Clips<input type="file" accept="video/*,image/*" multiple hidden onChange={addFiles} /></label>
             </div>}
-            {srcUrl && mode === 'photo' && !busyAI && (
-              <div className="ped-quickbar">
-                <button title="Open image" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}>📂</button>
-                <span className="ped-qb-sep" />
-                <button title="Add text" onClick={() => addItem('text')}>🅰</button>
-                <button title="Add shape" onClick={() => addItem('shape', 'rect')}>🔷</button>
-                <button title="Add sticker" onClick={() => addItem('sticker', null, null, '✨')}>🎀</button>
-                <span className="ped-qb-sep" />
-                <button title="AI tools" onClick={() => setLeftTab('ai')}>🤖</button>
-                <button title="Crop tool" onClick={() => setLeftTab('crop')}>✂️</button>
-                <span className="ped-qb-sep" />
-                <button title="Undo (Ctrl+Z)" onClick={undo} disabled={!canUndo}>↩</button>
-                <button title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!canRedo}>↪</button>
-              </div>
-            )}
           </div>
+          {srcUrl && mode === 'photo' && !busyAI && (
+            <div className="ped-quickbar">
+              <button className="ped-qb-btn" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}><span className="ped-qb-ico">📂</span><span className="ped-qb-txt">Open</span></button>
+              <span className="ped-qb-sep" />
+              <button className="ped-qb-btn" onClick={() => addItem('text')}><span className="ped-qb-ico">🅰</span><span className="ped-qb-txt">Add text</span></button>
+              <button className="ped-qb-btn" onClick={() => addItem('shape', 'rect')}><span className="ped-qb-ico">🔷</span><span className="ped-qb-txt">Add shape</span></button>
+              <button className="ped-qb-btn" onClick={() => addItem('sticker', null, null, '✨')}><span className="ped-qb-ico">🎀</span><span className="ped-qb-txt">Sticker</span></button>
+              <span className="ped-qb-sep" />
+              <button className="ped-qb-btn" onClick={() => setLeftTab('ai')}><span className="ped-qb-ico">🤖</span><span className="ped-qb-txt">AI tools</span></button>
+              <button className="ped-qb-btn" onClick={() => setLeftTab('crop')}><span className="ped-qb-ico">✂️</span><span className="ped-qb-txt">Crop</span></button>
+              <span className="ped-qb-sep" />
+              <button className="ped-qb-btn" onClick={undo} disabled={!canUndo}><span className="ped-qb-ico">↩</span><span className="ped-qb-txt">Undo</span></button>
+              <button className="ped-qb-btn" onClick={redo} disabled={!canRedo}><span className="ped-qb-ico">↪</span><span className="ped-qb-txt">Redo</span></button>
+            </div>
+          )}
           <div className="ped-comparebar">
             <span>Compare:</span>
             <button className={compare.mode === 'off' ? 'on' : ''} onClick={() => setCompare((c) => ({ ...c, mode: 'off' }))}>Before/After</button>
