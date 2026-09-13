@@ -154,6 +154,7 @@ export default function ProEditor({ params }) {
   const cancelRef = useRef(false);
   const capsRef = useRef({ w: 1280, h: 800, fullW: 1280, fullH: 800 });
   const lastSnapRef = useRef({ label: '', ts: 0 });
+  const pendingVideoSnapRef = useRef(null);
 
   // ---- adjustable state ---------------------------------------------------
   const [adjust, setAdjust] = useState(P.DEFAULT_ADJUST());
@@ -288,6 +289,7 @@ export default function ProEditor({ params }) {
       }
     };
     doLoad();
+    setTimeout(() => takeSnap('Open'), 300);
     // eslint-disable-next-line
   }, [mode]);
 
@@ -321,20 +323,21 @@ export default function ProEditor({ params }) {
     const now = Date.now();
     if (lastSnapRef.current.label === label && now - lastSnapRef.current.ts < 500) { lastSnapRef.current.ts = now; return; }
     lastSnapRef.current = { label, ts: now };
-    const state = cloneJSON({ adjust, curves, filters, effects, items, crop: { on: crop.on, x: crop.x, y: crop.y, w: crop.w, h: crop.h, ratio: crop.ratio, straighten: crop.straighten, flipH: crop.flipH, flipV: crop.flipV, rot: crop.rot } });
+    const state = cloneJSON({ adjust, curves, filters, effects, items, crop: { on: crop.on, x: crop.x, y: crop.y, w: crop.w, h: crop.h, ratio: crop.ratio, straighten: crop.straighten, flipH: crop.flipH, flipV: crop.flipV, rot: crop.rot }, video: { clips, transitions, audio, music } });
     setHistory((h) => {
       const snap = { label, state, base: baseCanvasRef.current, ts: Date.now() };
       const next = [...h.slice(0, histIdx + 1), snap].slice(-HISTORY_CAPS);
       setHistIdx(next.length - 1);
       return next;
     });
-  }, [adjust, curves, filters, effects, items, crop, histIdx]);
+  }, [adjust, curves, filters, effects, items, crop, histIdx, clips, transitions, audio, music]);
 
   const applyState = useCallback((state, base) => {
     if (state) {
       setAdjust(state.adjust); setCurves(state.curves); setFilters(state.filters || []);
       setEffects(state.effects || []); setItems(state.items || []);
       setCrop(state.crop); setSelId(null);
+      if (state.video && state.video.clips) { setClips(state.video.clips); setTransitions(state.video.transitions || []); setAudio(state.video.audio || { volume: 1, fadeIn: 0, fadeOut: 0, normalize: false, mute: false }); setMusic(state.video.music || null); setSelectedClip(null); }
     }
     if (base) baseCanvasRef.current = base;
   }, []);
@@ -358,6 +361,15 @@ export default function ProEditor({ params }) {
       setHistIdx(idx);
     });
   }, [histIdx, history, applyState]);
+
+  useEffect(() => {
+    if (mode === 'video' && pendingVideoSnapRef.current) {
+      const lbl = pendingVideoSnapRef.current;
+      pendingVideoSnapRef.current = null;
+      takeSnap(lbl);
+    }
+    // eslint-disable-next-line
+  }, [clips, mode]);
 
   /* ---- manual save ---- */
   const autosave = useCallback(() => {
@@ -1190,7 +1202,10 @@ export default function ProEditor({ params }) {
     setClips(next); notify('Clip split ✂️');
   };
   const addFiles = async (e) => {
-    for (const f of Array.from(e.target.files || [])) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+    pendingVideoSnapRef.current = 'Add media';
+    for (const f of files) {
       const isV = f.type.startsWith('video');
       const url = URL.createObjectURL(f);
       const meta = await loadMediaMeta(f).catch(() => ({ duration: 5, width: 1080, height: 1920, kind: isV ? 'video' : 'image' }));
@@ -1219,6 +1234,7 @@ export default function ProEditor({ params }) {
       for (let i = 0; i < n; i++) { let a = 0; for (let j = 0; j < 4000; j++) a += Math.abs(d[Math.min(d.length - 1, Math.floor(i * d.length / n) + j)]); w.push(Math.min(1, a / 600)); }
       ac.close();
     } catch { w = Array.from({ length: 70 }, () => 0.3); }
+    takeSnap('Music');
     setMusic({ url, wave: w, duration: totalDur });
     notify('Music added 🎵');
   };
@@ -1441,9 +1457,9 @@ export default function ProEditor({ params }) {
             {leftTab === 'text' && <TextPanel add={addItem} sel={sel} setItem={(id, patch) => { setItems((its) => its.map((i) => i.id === id ? { ...i, ...patch } : i)); takeSnap('Text edit'); }} />}
             {leftTab === 'shapes' && <ShapesPanel add={addItem} sel={sel} setItem={(id, patch) => { setItems((its) => its.map((i) => i.id === id ? { ...i, ...patch } : i)); takeSnap('Shape edit'); }} />}
             {leftTab === 'stickers' && <StickersPanel add={addItem} />}
-            {mode === 'video' && leftTab === 'timeline' && <TimelinePanel clips={clips} setClips={setClips} segments={segments} playPos={playPos} split={splitAt} speed={speed} setSpeed={setSpeed} selected={selectedClip} setSelected={setSelectedClip} takeSnap={takeSnap} />}
-            {mode === 'video' && leftTab === 'audio' && <AudioPanel audio={audio} setAudio={setAudio} onMusic={onMusic} wave={wave} />}
-            {mode === 'video' && leftTab === 'transition' && <TransitionPanel transitions={transitions} setTransitions={setTransitions} />}
+            {mode === 'video' && leftTab === 'timeline' && <TimelinePanel clips={clips} setClips={setClips} segments={segments} playPos={playPos} split={splitAt} speed={speed} setSpeed={setSpeed} selected={selectedClip} setSelected={setSelectedClip} takeSnap={takeSnap} onAddFiles={addFiles} />}
+            {mode === 'video' && leftTab === 'audio' && <AudioPanel audio={audio} setAudio={setAudio} onMusic={onMusic} wave={wave} takeSnap={takeSnap} />}
+            {mode === 'video' && leftTab === 'transition' && <TransitionPanel transitions={transitions} setTransitions={setTransitions} takeSnap={takeSnap} />}
           </div>
         </aside>
 
@@ -2150,55 +2166,56 @@ function PresetsPanel({ built, apply, userPresets, save, del, rename, dupe }) {
     </div>
   );
 }
-function TimelinePanel({ clips, setClips, segments, playPos, split, speed, setSpeed, selected, setSelected, takeSnap }) {
+function TimelinePanel({ clips, setClips, segments, playPos, split, speed, setSpeed, selected, setSelected, takeSnap, onAddFiles }) {
   return (
     <div className="ped-panel">
       <div className="ped-ai-row">
         <button className="btn btn-sm" onClick={() => split(playPos)}>✂️ Split at playhead</button>
         <button className="btn btn-sm" onClick={() => { takeSnap('Apply speed'); }}>Apply speed</button>
       </div>
-      <div className="ped-lbl-row"><span>Global Speed</span><select value={speed} onChange={(e) => setSpeed(+e.target.value)}>{[0.25, 0.5, 1, 1.5, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}</select></div>
+      <label className="btn btn-sm btn-primary" style={{ display: 'inline-flex' }}>＋ Add Clips<input type="file" accept="video/*,image/*" multiple hidden onChange={onAddFiles} /></label>
+      <div className="ped-lbl-row"><span>Global Speed</span><select value={speed} onChange={(e) => { takeSnap('Global speed'); setSpeed(+e.target.value); }}>{[0.25, 0.5, 1, 1.5, 2, 4].map((s) => <option key={s} value={s}>{s}×</option>)}</select></div>
       <div className="ped-clips-edit">
         {clips.map((c, i) => (
           <div key={c.id} className={`ped-clip-edit ${selected === c.id ? 'on' : ''}`} onClick={() => setSelected(c.id)}>
             <span>{c.name.slice(0, 14)}</span>
-            <label>In <input type="number" step="0.1" value={c.in} onClick={(e) => e.stopPropagation()} onChange={(e) => setClips((cs) => cs.map((x, j) => j === i ? { ...x, in: Math.max(0, Math.min(x.meta.duration - 0.2, +e.target.value)) } : x))} /></label>
-            <label>Dur <input type="number" step="0.1" value={Math.round(c.duration * 10) / 10} onClick={(e) => e.stopPropagation()} onChange={(e) => setClips((cs) => cs.map((x, j) => j === i ? { ...x, duration: Math.max(0.2, Math.min(x.meta.duration, +e.target.value)) } : x))} /></label>
-            <select value={c.filter} onClick={(e) => e.stopPropagation()} onChange={(e) => setClips((cs) => cs.map((x) => x.id === c.id ? { ...x, filter: e.target.value } : x))}>{['none', 'grayscale', 'sepia', 'invert', 'vintage', 'cinematic', 'warm', 'cool'].map((f) => <option key={f} value={f}>{f}</option>)}</select>
+            <label>In <input type="number" step="0.1" value={c.in} onClick={(e) => e.stopPropagation()} onChange={(e) => { takeSnap('Clip trim'); setClips((cs) => cs.map((x, j) => j === i ? { ...x, in: Math.max(0, Math.min(x.meta.duration - 0.2, +e.target.value)) } : x)); }} /></label>
+            <label>Dur <input type="number" step="0.1" value={Math.round(c.duration * 10) / 10} onClick={(e) => e.stopPropagation()} onChange={(e) => { takeSnap('Clip trim'); setClips((cs) => cs.map((x, j) => j === i ? { ...x, duration: Math.max(0.2, Math.min(x.meta.duration, +e.target.value)) } : x)); }} /></label>
+            <select value={c.filter} onClick={(e) => e.stopPropagation()} onChange={(e) => { takeSnap('Clip filter'); setClips((cs) => cs.map((x) => x.id === c.id ? { ...x, filter: e.target.value } : x)); }}>{['none', 'grayscale', 'sepia', 'invert', 'vintage', 'cinematic', 'warm', 'cool'].map((f) => <option key={f} value={f}>{f}</option>)}</select>
           </div>
         ))}
       </div>
     </div>
   );
 }
-function AudioPanel({ audio, setAudio, onMusic, wave }) {
+function AudioPanel({ audio, setAudio, onMusic, wave, takeSnap }) {
   return (
     <div className="ped-panel">
       <div className="ped-wave">{wave.map((v, i) => <i key={i} style={{ height: `${Math.max(6, v * 100)}%` }} />)}</div>
-      <AdjSlider label="Volume" value={Math.round(audio.volume * 100)} min={0} max={200} step={1} onChange={(v) => setAudio((a) => ({ ...a, volume: v / 100 }))} onReset={() => setAudio((a) => ({ ...a, volume: 1 }))} format={(v) => `${v}%`} />
-      <AdjSlider label="Fade In" value={audio.fadeIn} min={0} max={10} step={0.1} onChange={(v) => setAudio((a) => ({ ...a, fadeIn: v }))} onReset={() => setAudio((a) => ({ ...a, fadeIn: 0 }))} format={(v) => `${v}s`} />
-      <AdjSlider label="Fade Out" value={audio.fadeOut} min={0} max={10} step={0.1} onChange={(v) => setAudio((a) => ({ ...a, fadeOut: v }))} onReset={() => setAudio((a) => ({ ...a, fadeOut: 0 }))} format={(v) => `${v}s`} />
+      <AdjSlider label="Volume" value={Math.round(audio.volume * 100)} min={0} max={200} step={1} onChange={(v) => setAudio((a) => ({ ...a, volume: v / 100 }))} onReset={() => { takeSnap('Volume reset'); setAudio((a) => ({ ...a, volume: 1 })); }} format={(v) => `${v}%`} />
+      <AdjSlider label="Fade In" value={audio.fadeIn} min={0} max={10} step={0.1} onChange={(v) => setAudio((a) => ({ ...a, fadeIn: v }))} onReset={() => { takeSnap('Fade reset'); setAudio((a) => ({ ...a, fadeIn: 0 })); }} format={(v) => `${v}s`} />
+      <AdjSlider label="Fade Out" value={audio.fadeOut} min={0} max={10} step={0.1} onChange={(v) => setAudio((a) => ({ ...a, fadeOut: v }))} onReset={() => { takeSnap('Fade reset'); setAudio((a) => ({ ...a, fadeOut: 0 })); }} format={(v) => `${v}s`} />
       <div className="ped-ai-row">
-        <button className={`btn btn-sm ${audio.normalize ? 'btn-primary' : ''}`} onClick={() => setAudio((a) => ({ ...a, normalize: !a.normalize }))}>Normalize {audio.normalize ? '✓' : ''}</button>
-        <button className={`btn btn-sm ${audio.mute ? 'btn-primary' : ''}`} onClick={() => setAudio((a) => ({ ...a, mute: !a.mute }))}>Mute {audio.mute ? '✓' : ''}</button>
+        <button className={`btn btn-sm ${audio.normalize ? 'btn-primary' : ''}`} onClick={() => { takeSnap('Normalize'); setAudio((a) => ({ ...a, normalize: !a.normalize })); }}>Normalize {audio.normalize ? '✓' : ''}</button>
+        <button className={`btn btn-sm ${audio.mute ? 'btn-primary' : ''}`} onClick={() => { takeSnap('Mute'); setAudio((a) => ({ ...a, mute: !a.mute })); }}>Mute {audio.mute ? '✓' : ''}</button>
       </div>
-      <button className="btn btn-sm" onClick={() => { setAudio((a) => ({ ...a, normalize: true, volume: 1.3 })); }}>🔊 Voice Enhance</button>
+      <button className="btn btn-sm" onClick={() => { takeSnap('Voice enhance'); setAudio((a) => ({ ...a, normalize: true, volume: 1.3 })); }}>🔊 Voice Enhance</button>
       <label className="btn btn-sm" style={{ marginTop: 8, display: 'inline-flex' }}>🎵 Background Music<input type="file" accept="audio/*" hidden onChange={onMusic} /></label>
     </div>
   );
 }
-function TransitionPanel({ transitions, setTransitions }) {
+function TransitionPanel({ transitions, setTransitions, takeSnap }) {
   const types = ['fade', 'dissolve', 'slide', 'zoom', 'spin', 'wipe', 'flash', 'blur', 'glitch', 'cinematic'];
   return (
     <div className="ped-panel">
       <p className="ped-hint">Drag a transition onto the timeline's video track (or pick here).</p>
-      <div className="ped-grid-2">{types.map((t) => <button key={t} className="ped-mini-btn" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', t)} onClick={() => setTransitions((ts) => [...ts, { type: t, dur: 0.5, at: 0 }])}>{t}</button>)}</div>
+      <div className="ped-grid-2">{types.map((t) => <button key={t} className="ped-mini-btn" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', t)} onClick={() => { takeSnap('Transition'); setTransitions((ts) => [...ts, { type: t, dur: 0.5, at: 0 }]); }}>{t}</button>)}</div>
       <strong className="ped-lead">Applied</strong>
       {transitions.length ? transitions.map((t, i) => (
         <div key={i} className="ped-stack-row">
           <span>{t.type} @ {Math.round(t.at)}s</span>
-          <input type="range" min="0.1" max="2" step="0.1" value={t.dur} onChange={(e) => setTransitions((ts) => ts.map((x, j) => j === i ? { ...x, dur: +e.target.value } : x))} />
-          <button className="ped-reset" onClick={() => setTransitions((ts) => ts.filter((_, j) => j !== i))}>✕</button>
+          <input type="range" min="0.1" max="2" step="0.1" value={t.dur} onChange={(e) => { takeSnap('Transition'); setTransitions((ts) => ts.map((x, j) => j === i ? { ...x, dur: +e.target.value } : x)); }} />
+          <button className="ped-reset" onClick={() => { takeSnap('Transition removed'); setTransitions((ts) => ts.filter((_, j) => j !== i)); }}>✕</button>
         </div>
       )) : <small className="ped-hint">No transitions yet.</small>}
     </div>
