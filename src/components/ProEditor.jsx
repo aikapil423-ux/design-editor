@@ -225,6 +225,7 @@ export default function ProEditor({ params }) {
   const [snapOn, setSnapOn] = useState(false);
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const panRef = useRef({ x: 0, y: 0 });
+  const [imgLoaded, setImgLoaded] = useState(!!srcUrl);
 
   // ---- export options -----------------------------------------------------
   const [expOpts, setExpOpts] = useState({ fmt: 'png', quality: 92, resW: 1080, resH: 1080, fps: 30, crf: 20, preset: 'original' });
@@ -252,6 +253,7 @@ export default function ProEditor({ params }) {
         capsRef.current = { w: c.width, h: c.height, fullW: img.naturalWidth, fullH: img.naturalHeight };
         setCrop({ on: false, x: 0, y: 0, w: c.width, h: c.height, ratio: null, straighten: 0, flipH: false, flipV: false, rot: 0 });
         setReady(true);
+        setImgLoaded(true);
       };
       img.onerror = () => { notify('Could not load image', 'error'); setReady(true); };
       if (srcUrl) img.src = srcUrl;
@@ -1469,11 +1471,11 @@ export default function ProEditor({ params }) {
               <canvas ref={canvasRef} className="ped-canvas" />
             ) : (
               <div className="ped-video-stage">
-                <video ref={vidRef} className="ped-video" muted={audio.mute} style={{ filter: P.videoCssFilter(adjust) }} controls={playing} />
+                <video ref={vidRef} className="ped-video" muted={audio.mute} preload="auto" style={{ filter: P.videoCssFilter(adjust) }} controls />
                 <canvas ref={canvasRef} className="ped-canvas ped-canvas-overlay" />
               </div>
             )}
-            {mode === 'photo' && !srcUrl && (
+            {mode === 'photo' && !imgLoaded && (
               <div className={`ped-empty ${dragOver ? 'over' : ''}`}
                 onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
                 onDragLeave={() => setDragOver(false)}
@@ -1500,7 +1502,7 @@ export default function ProEditor({ params }) {
               <label className="btn btn-sm btn-primary" style={{ display: 'inline-flex' }}>＋ Add Clips<input type="file" accept="video/*,image/*" multiple hidden onChange={addFiles} /></label>
             </div>}
           </div>
-          {srcUrl && mode === 'photo' && !busyAI && (
+          {imgLoaded && mode === 'photo' && !busyAI && (
             <div className="ped-quickbar">
               <button className="ped-qb-btn" onClick={() => { const el = document.getElementById('ped-file-input'); if (el) el.click(); }}><span className="ped-qb-ico">📂</span><span className="ped-qb-txt">Open</span></button>
               <span className="ped-qb-sep" />
@@ -1634,6 +1636,7 @@ export default function ProEditor({ params }) {
         setCrop({ on: false, x: 0, y: 0, w: c.width, h: c.height, ratio: null, straighten: 0, flipH: false, flipV: false, rot: 0 });
         setItems([]); setSelId(null); setHistory([]); setHistIdx(-1);
         setPan({ x: 0, y: 0 }); panRef.current = { x: 0, y: 0 };
+        setImgLoaded(true);
         renderNow(); notify('Image loaded ✓');
         setTimeout(() => takeSnap('Open'), 250);
       };
