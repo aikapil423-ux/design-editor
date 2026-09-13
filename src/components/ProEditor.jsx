@@ -1271,8 +1271,6 @@ export default function ProEditor({ params }) {
   const dirty = history.length > 1 && savedIdx !== histIdx;
   const canUndo = histIdx > 0 && history.length > 0;
   const canRedo = histIdx >= 0 && histIdx < history.length - 1;
-  const favSet = new Set(favTools);
-  const visibleTabs = LEFT_TABS.filter(([id, label]) => !toolQ || label.toLowerCase().includes(toolQ.toLowerCase()));
   const avatarLetter = (profile && profile.name && profile.name.trim()) ? profile.name.trim()[0].toUpperCase() : 'C';
   const LEFT_TABS = [
     ['adjust', 'Adjust', '☀️'], ['color', 'Color', '🎨'], ['wb', 'WB', '🌡'], ['detail', 'Detail', '🔍'],
@@ -1285,6 +1283,8 @@ export default function ProEditor({ params }) {
     ['props', sel ? 'Object' : 'Properties', '🎯'], ['layers', 'Layers', '🗂'], ['history', 'History', '🕘'], ['presets', 'Presets', '💾'],
   ];
   if (mode === 'video') RIGHT_TABS.push(['video', 'Video', '🎬']);
+  const favSet = new Set(favTools);
+  const visibleTabs = LEFT_TABS.filter(([id, label]) => !toolQ || label.toLowerCase().includes(toolQ.toLowerCase()));
 
   const maskPanelDims = { w: capsRef.current.w, h: capsRef.current.h };
 
