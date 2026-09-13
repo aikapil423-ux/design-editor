@@ -74,9 +74,8 @@ export default function Settings() {
 
         <div className="panel">
           <div className="panel-head"><h3>Data & Privacy</h3></div>
-          <p className="muted">Everything is stored locally in your browser. Nothing is uploaded. Autosave: {settings.autosave ? 'on' : 'off'}</p>
+          <p className="muted">Everything is stored locally in your browser. Nothing is uploaded. Work is saved manually from the editor's Save button.</p>
           <div className="gen-actions" style={{ marginTop: 8 }}>
-            <button className="btn" onClick={() => updateSettings({ autosave: !settings.autosave })}>Autosave {settings.autosave ? '→ Off' : '→ On'}</button>
             <button className="btn btn-danger" onClick={clearData}>🧹 Clear studio data</button>
           </div>
           <p className="muted" style={{ marginTop: 8 }}>{(projects || []).length} local projects · {new Blob([localStorage.getItem('dm_projects') || '']).size} KB</p>

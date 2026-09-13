@@ -7,3 +7,4 @@ npm-debug.log*
 .env.local
 .env.*.local
 .DS_Store
+.vercel

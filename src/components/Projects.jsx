@@ -33,7 +33,7 @@ export default function Projects() {
   return (
     <div className="ws">
       <div className="ws-header">
-        <div><h1>📁 My Projects</h1><p>{(projects || []).length} projects · autosaved locally · versioned</p></div>
+        <div><h1>📁 My Projects</h1><p>{(projects || []).length} projects · saved locally · versioned</p></div>
         <input className="search-input" placeholder="Search projects…" value={query} onChange={(e) => setQuery(e.target.value)} />
       </div>
       <div className="toolbar-row">

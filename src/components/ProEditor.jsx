@@ -72,20 +72,24 @@ const cloneJSON = (o) => { try { return JSON.parse(JSON.stringify(o)); } catch {
 /* ===========================================================================
    SMALL UI PRIMITIVES
    =========================================================================== */
-function AdjSlider({ label, value, min, max, step, onChange, onReset, fmt }) {
+function AdjSlider({ label, value, min, max, step, onChange, onReset, fmt, onCommit }) {
+  const commit = () => { if (onCommit) onCommit(); };
   return (
     <div className="ped-slider">
       <div className="ped-slider-head">
         <span className="ped-lbl">{label}</span>
         <span className="ped-val">
           <input className="ped-num" type="number" min={min} max={max} step={step} value={Math.round(value * 100) / 100}
-            onChange={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) onChange(Math.max(min, Math.min(max, v))); }} />
-          <button className="ped-reset" title="Reset (double-click slider)" onClick={onReset}>↺</button>
+            onChange={(e) => { const v = parseFloat(e.target.value); if (!Number.isNaN(v)) onChange(Math.max(min, Math.min(max, v))); }}
+            onBlur={commit} />
+          <button className="ped-reset" title="Reset (double-click slider)" onClick={() => { onReset(); commit(); }}>↺</button>
         </span>
       </div>
       <input className="ped-range" type="range" min={min} max={max} step={step} value={value}
         onInput={(e) => onChange(parseFloat(e.target.value))}
-        onDoubleClick={onReset} />
+        onPointerUp={commit}
+        onPointerCancel={commit}
+        onDoubleClick={() => { onReset(); commit(); }} />
       {fmt && <span className="ped-fmt">{fmt(value)}</span>}
     </div>
   );
@@ -111,7 +115,7 @@ function SegT({ opts, value, onChange, small }) {
    PRO EDITOR
    =========================================================================== */
 export default function ProEditor({ params }) {
-  const { navigate, notify, upsertProject, addAI, settings } = useApp();
+  const { navigate, notify, upsertProject, addAI } = useApp();
 
   const isVideoInit = useMemo(() => !!params.src && params.src.startsWith('blob:') || params.kind === 'video', [params]);
   const srcUrl = params.src || params.preview || null;
@@ -127,8 +131,8 @@ export default function ProEditor({ params }) {
   const rafRef = useRef(0), lastRender = useRef(0);
   const pointerRef = useRef(null);
   const cancelRef = useRef(false);
-  const saveTimer = useRef(0);
   const capsRef = useRef({ w: 1280, h: 800, fullW: 1280, fullH: 800 });
+  const lastSnapRef = useRef({ label: '', ts: 0 });
 
   // ---- adjustable state ---------------------------------------------------
   const [adjust, setAdjust] = useState(P.DEFAULT_ADJUST());
@@ -162,9 +166,8 @@ export default function ProEditor({ params }) {
   // ---- presets ------------------------------------------------------------
   const [userPresets, setUserPresets] = useState(() => { try { return JSON.parse(localStorage.getItem('dm_presets') || '[]'); } catch { return []; } });
 
-  // ---- autosave / busy / export ------------------------------------------
+  // ---- save / busy / export ----------------------------------------------
   const [savedAt, setSavedAt] = useState(null);
-  const [showAutosaveRestore, setShowAutosaveRestore] = useState(false);
   const [busyAI, setBusyAI] = useState(null);
   const [exportOpen, setExportOpen] = useState(false);
   const [busyExport, setBusyExport] = useState(false);
@@ -274,6 +277,9 @@ export default function ProEditor({ params }) {
 
   /* ---- undo / redo ---- */
   const takeSnap = useCallback((label) => {
+    const now = Date.now();
+    if (lastSnapRef.current.label === label && now - lastSnapRef.current.ts < 500) { lastSnapRef.current.ts = now; return; }
+    lastSnapRef.current = { label, ts: now };
     const state = cloneJSON({ adjust, curves, filters, effects, items, crop: { on: crop.on, x: crop.x, y: crop.y, w: crop.w, h: crop.h, ratio: crop.ratio, straighten: crop.straighten, flipH: crop.flipH, flipV: crop.flipV, rot: crop.rot } });
     setHistory((h) => {
       const snap = { label, state, base: baseCanvasRef.current, ts: Date.now() };
@@ -312,7 +318,7 @@ export default function ProEditor({ params }) {
     });
   }, [histIdx, history, applyState]);
 
-  /* ---- autosave ---- */
+  /* ---- manual save ---- */
   const autosave = useCallback(() => {
     const data = cloneJSON({ name, adjust, curves, filters, effects, items, crop });
     data.saved = Date.now();
@@ -320,34 +326,13 @@ export default function ProEditor({ params }) {
     setSavedAt(Date.now());
   }, [name, adjust, curves, filters, effects, items, crop]);
   useEffect(() => {
-    if ((settings && settings.autosave === false) || !ready) return;
-    clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(autosave, 900);
-    return () => clearTimeout(saveTimer.current);
-  }, [adjust, curves, filters, effects, items, crop, name, ready, settings]);
-  useEffect(() => {
     if (!savedAt) return;
     const t = setTimeout(() => setSavedAt(null), 1800);
     return () => clearTimeout(t);
   }, [savedAt]);
   useEffect(() => {
-    try {
-      const d = JSON.parse(localStorage.getItem(AUTOSAVE_KEY) || 'null');
-      if (d && d.items && d.saved) setShowAutosaveRestore(true);
-    } catch { }
+    try { localStorage.removeItem(AUTOSAVE_KEY); } catch { }
   }, []);
-
-  const restoreAutosave = () => {
-    try {
-      const data = JSON.parse(localStorage.getItem(AUTOSAVE_KEY));
-      if (!data) return;
-      setName(data.name || name); setAdjust(data.adjust || P.DEFAULT_ADJUST());
-      setCurves(data.curves || { rgb: [], r: [], g: [], b: [] });
-      setFilters(data.filters || []); setEffects(data.effects || []); setItems(data.items || []); setCrop(data.crop);
-      notify('Recovered from autosave');
-      setShowAutosaveRestore(false);
-    } catch { notify('Could not restore', 'error'); }
-  };
 
   /* ---- render helpers ---- */
   const drawItems = (ctx, W, H, list) => {
@@ -581,6 +566,35 @@ export default function ProEditor({ params }) {
     setMaskCvStamp((v) => v + 1);
   };
 
+  const clampV = (v, a, b) => Math.min(b, Math.max(a, v));
+  const cropHandleAt = (x, y) => {
+    const c = stateRef.current.crop;
+    if (!c || !c.on) return null;
+    const HZ = 10;
+    const l = Math.abs(x - c.x) < HZ, r = Math.abs(x - (c.x + c.w)) < HZ;
+    const t = Math.abs(y - c.y) < HZ, b = Math.abs(y - (c.y + c.h)) < HZ;
+    if (l && t) return 'nw'; if (r && t) return 'ne'; if (l && b) return 'sw'; if (r && b) return 'se';
+    if (l) return 'w'; if (r) return 'e'; if (t) return 'n'; if (b) return 's';
+    if (x > c.x && x < c.x + c.w && y > c.y && y < c.y + c.h) return 'move';
+    return null;
+  };
+  const dragCrop = (d, pt, W, H) => {
+    const hnd = d.handle;
+    const dx = pt.x - d.start.sx, dy = pt.y - d.start.sy;
+    const min = 20;
+    const o = d.orig;
+    if (hnd === 'move') {
+      return { x: clampV(o.x + dx, 0, Math.max(0, W - o.w)), y: clampV(o.y + dy, 0, Math.max(0, H - o.h)), w: o.w, h: o.h };
+    }
+    let { x, y, w, h } = o;
+    if (hnd.indexOf('w') >= 0) { const nx = clampV(o.x + dx, 0, o.x + o.w - min); w = o.w + (o.x - nx); x = nx; }
+    if (hnd.indexOf('e') >= 0) { w = clampV(o.w + dx, min, W - o.x); }
+    if (hnd.indexOf('n') >= 0) { const ny = clampV(o.y + dy, 0, o.y + o.h - min); h = o.h + (o.y - ny); y = ny; }
+    if (hnd.indexOf('s') >= 0) { h = clampV(o.h + dy, min, H - o.y); }
+    return { x, y, w, h };
+  };
+  const CROP_CURSOR = { nw: 'nwse-resize', se: 'nwse-resize', ne: 'nesw-resize', sw: 'nesw-resize', n: 'ns-resize', s: 'ns-resize', e: 'ew-resize', w: 'ew-resize', move: 'move' };
+
   useEffect(() => {
     const cv = canvasRef.current;
     if (!cv || mode === 'video') return;
@@ -591,10 +605,18 @@ export default function ProEditor({ params }) {
       const pt = toSource(e);
       const x = Math.max(0, Math.min(base.width, pt.x)), y = Math.max(0, Math.min(base.height, pt.y));
       pointerRef.current = { x, y, moved: false, down: true, it: null };
+      if (st.crop.on) {
+        const handle = cropHandleAt(pt.x, pt.y);
+        if (!handle) return;
+        const c = st.crop;
+        pointerRef.current = { down: true, cropData: { handle, orig: { x: c.x, y: c.y, w: c.w, h: c.h }, start: { sx: pt.x, sy: pt.y }, dragged: false } };
+        return;
+      }
       if (st.leftTab === 'mask' && !st.crop.on) { brushAt(x, y, false); return; }
       if (st.leftTab === 'retouch' && st.retouch.tool && !st.crop.on) { brushAt(x, y, true); return; }
       if (st.leftTab === 'wb' && st.wbPick) {
         const res = P.wbFromSample(srcCanvasRef.current, x, y);
+        takeSnap('White balance');
         setAdjust((a) => ({ ...a, wb: { temp: a.wb.temp + res.temp, tint: a.wb.tint + res.tint } }));
         setWbPick(false);
         notify('White balance sampled ✓');
@@ -606,17 +628,33 @@ export default function ProEditor({ params }) {
     };
     const move = (e) => {
       const pr = pointerRef.current;
-      if (!pr || !pr.down) return;
-      const base = baseCanvasRef.current;
       const st = stateRef.current;
+      if (!pr || !pr.down) {
+        if (st.crop.on && canvasRef.current) {
+          const cp = toSource(e);
+          const hd = cropHandleAt(cp.x, cp.y);
+          canvasRef.current.style.cursor = hd ? (CROP_CURSOR[hd] || 'move') : 'default';
+        }
+        return;
+      }
+      const base = baseCanvasRef.current;
       const pt = toSource(e);
+      if (pr.cropData) {
+        const r = dragCrop(pr.cropData, pt, base.width, base.height);
+        pr.cropData.dragged = true;
+        setCrop((c) => ({ ...c, ...r }));
+        return;
+      }
       if (pr.it) {
+        pr.moved = true;
         setItems((its) => its.map((i) => i.id === pr.it.id ? { ...i, x: Math.max(0, Math.min(base.width, pt.x + pr.it.dx)), y: Math.max(0, Math.min(base.height, pt.y + pr.it.dy)) } : i));
       } else if (st.leftTab === 'mask' && !st.crop.on) { brushAt(pt.x, pt.y, false); }
       else if (st.leftTab === 'retouch' && st.retouch.tool && !st.crop.on) { brushAt(pt.x, pt.y, true); }
     };
     const up = () => {
-      if (pointerRef.current && pointerRef.current.moved && pointerRef.current.it) takeSnap('Move');
+      const pr = pointerRef.current;
+      if (pr && pr.moved && pr.it) takeSnap('Move');
+      else if (pr && pr.cropData && pr.cropData.dragged) takeSnap('Crop');
       pointerRef.current = null;
     };
     cv.addEventListener('pointerdown', down);
@@ -733,6 +771,7 @@ export default function ProEditor({ params }) {
 
   /* ---- crop ---- */
   const applyCropRatio = (ratio) => {
+    takeSnap('Crop ratio');
     setCrop((cr) => {
       const W = baseCanvasRef.current.width, H = baseCanvasRef.current.height;
       const r = ratio === '1:1' ? 1 : ratio === '4:3' ? 4 / 3 : ratio === '3:4' ? 3 / 4 : ratio === '16:9' ? 16 / 9 : ratio === '9:16' ? 9 / 16 : null;
@@ -1119,19 +1158,11 @@ export default function ProEditor({ params }) {
 
   return (
     <div className="ped">
-      {showAutosaveRestore && (
-        <div className="ped-banner">
-          <span>💾 We found a previous session for this project.</span>
-          <button className="btn btn-sm btn-primary" onClick={restoreAutosave}>Restore</button>
-          <button className="btn btn-sm" onClick={() => { localStorage.removeItem(AUTOSAVE_KEY); setShowAutosaveRestore(false); }}>Dismiss</button>
-        </div>
-      )}
-
       {/* ===== TOP BAR ===== */}
       <header className="ped-topbar">
         <button className="ped-btn" title="Back" onClick={() => navigate('home')}>←</button>
         <input className="ped-name" value={name} onChange={(e) => setName(e.target.value)} aria-label="Project name" />
-        <span className={`ped-saved ${savedAt ? 'on' : ''}`}>{savedAt ? '💾 Saved' : (settings && settings.autosave === false ? 'Autosave off' : '💾 Autosave')}</span>
+        <span className={`ped-saved ${savedAt ? 'on' : ''}`}>{savedAt ? '💾 Saved' : 'Manual save'}</span>
         <span className="ped-top-sep" />
         <button className="ped-btn" title="Undo (Ctrl+Z)" onClick={undo} disabled={histIdx <= 0}>↩</button>
         <button className="ped-btn" title="Redo" onClick={redo} disabled={histIdx >= history.length - 1}>↪</button>
@@ -1159,15 +1190,15 @@ export default function ProEditor({ params }) {
               setAdjust((a) => ({ ...a, ...P.autoAdjust(src) }));
               notify('Auto adjusted ✓', 'info');
             }} />}
-            {leftTab === 'color' && <ColorPanel value={adjust} patch={setAdjustWrap(setAdjust)} />}
+            {leftTab === 'color' && <ColorPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Color')} />}
             {leftTab === 'curves' && <CurvesPanel curves={curves} setCurves={setCurves} hist={histRef.current} takeSnap={takeSnap} />}
-            {leftTab === 'wb' && <WBPanel adjust={adjust} setAdjust={setAdjust} notify={notify} pick={wbPick} setPick={setWbPick} />}
-            {leftTab === 'detail' && <DetailPanel value={adjust} patch={setAdjustWrap(setAdjust)} />}
-            {leftTab === 'optics' && <OpticsPanel value={adjust} patch={setAdjustWrap(setAdjust)} />}
-            {leftTab === 'crop' && <CropPanel crop={crop} setCrop={setCrop} apply={applyCrop} setRatio={applyCropRatio} W={capsRef.current.w} H={capsRef.current.h} />}
+            {leftTab === 'wb' && <WBPanel adjust={adjust} setAdjust={setAdjust} notify={notify} pick={wbPick} setPick={setWbPick} commit={() => takeSnap('White balance')} />}
+            {leftTab === 'detail' && <DetailPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Detail')} />}
+            {leftTab === 'optics' && <OpticsPanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Optics')} />}
+            {leftTab === 'crop' && <CropPanel crop={crop} setCrop={setCrop} apply={applyCrop} setRatio={applyCropRatio} W={capsRef.current.w} H={capsRef.current.h} commit={() => takeSnap('Crop')} />}
             {leftTab === 'filters' && <FiltersPanel filters={filters} setFilters={setFilters} takeSnap={takeSnap} />}
             {leftTab === 'fx' && <EffectsPanel effects={effects} setEffects={setEffects} takeSnap={takeSnap} />}
-            {leftTab === 'vignette' && <VignettePanel value={adjust} patch={setAdjustWrap(setAdjust)} resetVg={() => { const d = P.DEFAULT_ADJUST().optics.vignette; setAdjust((a) => ({ ...a, optics: { ...a.optics, vignette: d } })); }} />}
+            {leftTab === 'vignette' && <VignettePanel value={adjust} patch={setAdjustWrap(setAdjust)} commit={() => takeSnap('Vignette')} resetVg={() => { const d = P.DEFAULT_ADJUST().optics.vignette; setAdjust((a) => ({ ...a, optics: { ...a.optics, vignette: d } })); }} />}
             {leftTab === 'ai' && <AIPanel run={runAI} busy={busyAI} cancel={() => { cancelRef.current = true; }} />}
             {leftTab === 'mask' && <MaskPanel dims={maskPanelDims} ensure={ensureMask} clear={clearMask} apply={applyMaskEdits} ui={maskUi} setUi={setMaskUi} brush={brushUi} setBrush={setBrushUi} />}
             {leftTab === 'retouch' && <RetouchPanel tool={retouch.tool} setTool={(t) => setRetouch((r) => ({ ...r, tool: t }))} opts={retouch} setOpts={setRetouch} apply={retouchApply} />}
@@ -1227,7 +1258,7 @@ export default function ProEditor({ params }) {
             ))}
           </div>
           <div className="ped-right-body">
-            {rightTab === 'props' && <PropsPanel sel={sel} set={selId ? (patch) => setItems((its) => its.map((i) => i.id === selId ? { ...i, ...patch } : i)) : null} />}
+            {rightTab === 'props' && <PropsPanel sel={sel} set={selId ? (patch) => setItems((its) => its.map((i) => i.id === selId ? { ...i, ...patch } : i)) : null} commit={() => takeSnap('Properties')} />}
             {rightTab === 'layers' && <LayersPanel items={items} setItems={setItems} add={addItem} selId={selId} setSelId={setSelId} takeSnap={takeSnap} />}
             {rightTab === 'history' && <HistoryPanel history={history} histIdx={histIdx} onJump={(idx) => { if (history[idx]) { if (history[idx].base) baseCanvasRef.current = history[idx].base; applyState(history[idx].state, null); setHistIdx(idx); notify(`Jumped to: ${history[idx].label}`, 'info'); } }} onUndoAll={() => { if (history[0]) { if (history[0].base) baseCanvasRef.current = history[0].base; applyState(history[0].state, null); setHistIdx(0); notify('Undid all changes'); } }} />}
             {rightTab === 'presets' && <PresetsPanel built={BUILTIN_PRESETS} apply={applyPreset} userPresets={userPresets} save={savePreset} del={delPreset} rename={renamePreset} dupe={dupePreset} />}
@@ -1338,7 +1369,7 @@ function useStateSync(fn) { (function run() { if (typeof Promise !== 'undefined'
 /* ===========================================================================
    PANELS
    =========================================================================== */
-function LightPanel({ value, patch, onAutoAdjust }) {
+function LightPanel({ value, patch, onAutoAdjust, commit }) {
   return (
     <div className="ped-panel">
       <div className="ped-ai-row">
@@ -1346,33 +1377,33 @@ function LightPanel({ value, patch, onAutoAdjust }) {
       </div>
       <ZExpando label="Light" icon="☀️">
         {LIGHT_OPS.map(([k, label, min, max, step]) => (
-          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} />
+          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} onCommit={commit} />
         ))}
       </ZExpando>
     </div>
   );
 }
-function ColorPanel({ value, patch }) {
+function ColorPanel({ value, patch, commit }) {
   const [bal, setBal] = useState('mids');
   return (
     <div className="ped-panel">
       <ZExpando label="Color" icon="🎨">
         {COLOR_OPS.map(([k, label, min, max, step]) => (
-          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} />
+          <AdjSlider key={k} label={label} value={value[k]} min={min} max={max} step={step} onChange={(v) => patch.set(k, v)} onReset={() => patch.reset(k)} onCommit={commit} />
         ))}
         <div className="ped-lbl-row"><span>Color Balance</span><div className="ped-seg ped-seg-sm">{['shadows', 'mids', 'highlights'].map((s) => <button key={s} className={bal === s ? 'on' : ''} onClick={() => setBal(s)}>{s[0].toUpperCase()}{s.slice(1)}</button>)}</div></div>
         {['r', 'g', 'b'].map((ch) => (
           <AdjSlider key={ch} label={ch.toUpperCase()} value={value.balance[bal][ch]} min={-100} max={100} step={1}
-            onChange={(v) => patch.set('balance', { ...value.balance, [bal]: { ...value.balance[bal], [ch]: v } })} onReset={() => patch.set('balance', { ...value.balance, [bal]: { r: 0, g: 0, b: 0 } })} />
+            onChange={(v) => patch.set('balance', { ...value.balance, [bal]: { ...value.balance[bal], [ch]: v } })} onReset={() => patch.set('balance', { ...value.balance, [bal]: { r: 0, g: 0, b: 0 } })} onCommit={commit} />
         ))}
       </ZExpando>
       <ZExpando label="HSL — Per Color" icon="🌈">
         {HSLC.map((n, i) => (
           <div key={n} className="ped-hsl-block">
             <strong>{n}</strong>
-            <AdjSlider label="Hue" value={hslVal(value, 0, i)} min={-180} max={180} step={1} onChange={(v) => hslSet(value, patch, 0, i, v)} onReset={() => hslSet(value, patch, 0, i, 0)} />
-            <AdjSlider label="Sat" value={hslVal(value, 1, i)} min={-100} max={100} step={1} onChange={(v) => hslSet(value, patch, 1, i, v)} onReset={() => hslSet(value, patch, 1, i, 0)} />
-            <AdjSlider label="Lum" value={hslVal(value, 2, i)} min={-100} max={100} step={1} onChange={(v) => hslSet(value, patch, 2, i, v)} onReset={() => hslSet(value, patch, 2, i, 0)} />
+            <AdjSlider label="Hue" value={hslVal(value, 0, i)} min={-180} max={180} step={1} onChange={(v) => hslSet(value, patch, 0, i, v)} onReset={() => hslSet(value, patch, 0, i, 0)} onCommit={commit} />
+            <AdjSlider label="Sat" value={hslVal(value, 1, i)} min={-100} max={100} step={1} onChange={(v) => hslSet(value, patch, 1, i, v)} onReset={() => hslSet(value, patch, 1, i, 0)} onCommit={commit} />
+            <AdjSlider label="Lum" value={hslVal(value, 2, i)} min={-100} max={100} step={1} onChange={(v) => hslSet(value, patch, 2, i, v)} onReset={() => hslSet(value, patch, 2, i, 0)} onCommit={commit} />
           </div>
         ))}
       </ZExpando>
@@ -1467,69 +1498,69 @@ function CurvesPanel({ curves, setCurves, hist, takeSnap }) {
   );
 }
 
-function WBPanel({ adjust, setAdjust, notify, pick, setPick }) {
+function WBPanel({ adjust, setAdjust, notify, pick, setPick, commit }) {
   return (
     <div className="ped-panel">
       <ZExpando label="White Balance" icon="🌡">
         <div className="ped-ai-row">
-          <button className="btn btn-sm" onClick={() => { setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: 0, tint: 0 } })); notify('White balance reset'); }}>⚖ Reset WB</button>
+          <button className="btn btn-sm" onClick={() => { setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: 0, tint: 0 } })); notify('White balance reset'); commit(); }}>⚖ Reset WB</button>
           <button className={`btn btn-sm ${pick ? 'btn-primary' : ''}`} onClick={() => { setPick(!pick); notify(pick ? 'Picker off' : 'Click a neutral area of the image'); }}>👁 Eyedropper</button>
         </div>
-        <AdjSlider label="Temperature" value={adjust.wb.temp} min={-100} max={100} step={1} onChange={(v) => setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: v } }))} onReset={() => setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: 0 } }))} />
-        <AdjSlider label="Tint" value={adjust.wb.tint} min={-100} max={100} step={1} onChange={(v) => setAdjust((a) => ({ ...a, wb: { ...a.wb, tint: v } }))} onReset={() => setAdjust((a) => ({ ...a, wb: { ...a.wb, tint: 0 } }))} />
+        <AdjSlider label="Temperature" value={adjust.wb.temp} min={-100} max={100} step={1} onChange={(v) => setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: v } }))} onReset={() => setAdjust((a) => ({ ...a, wb: { ...a.wb, temp: 0 } }))} onCommit={commit} />
+        <AdjSlider label="Tint" value={adjust.wb.tint} min={-100} max={100} step={1} onChange={(v) => setAdjust((a) => ({ ...a, wb: { ...a.wb, tint: v } }))} onReset={() => setAdjust((a) => ({ ...a, wb: { ...a.wb, tint: 0 } }))} onCommit={commit} />
       </ZExpando>
     </div>
   );
 }
-function DetailPanel({ value, patch }) {
+function DetailPanel({ value, patch, commit }) {
   return (
     <div className="ped-panel">
       <p className="ped-hint">🔍 Zoom the centre canvas to 200% for a close-up detail check.</p>
       <ZExpando label="Detail" icon="🔍">
         {DETAIL_OPS.map(([k, label, min, max, step]) => (
-          <AdjSlider key={k} label={label} value={value.detail[k]} min={min} max={max} step={step} onChange={(v) => patch.set('detail', { ...value.detail, [k]: v })} onReset={() => patch.set('detail', P.DEFAULT_ADJUST().detail)} />
+          <AdjSlider key={k} label={label} value={value.detail[k]} min={min} max={max} step={step} onChange={(v) => patch.set('detail', { ...value.detail, [k]: v })} onReset={() => patch.set('detail', P.DEFAULT_ADJUST().detail)} onCommit={commit} />
         ))}
       </ZExpando>
     </div>
   );
 }
-function OpticsPanel({ value, patch }) {
+function OpticsPanel({ value, patch, commit }) {
   return (
     <div className="ped-panel">
-      <div className="ped-ai-row"><button className="btn btn-sm" onClick={() => { patch.set('optics', { ...value.optics, lens: 0, perspective: { x: 0, y: 0 }, autoLens: true }); notify('Auto lens correction applied'); }}>✨ Auto Lens Correction</button></div>
+      <div className="ped-ai-row"><button className="btn btn-sm" onClick={() => { patch.set('optics', { ...value.optics, lens: 0, perspective: { x: 0, y: 0 }, autoLens: true }); commit(); }}>✨ Auto Lens Correction</button></div>
       <ZExpando label="Optics / Lens" icon="🔮">
         {OPTIC_OPS.map(([k, label, min, max, step]) => (
-          <AdjSlider key={k} label={label} value={value.optics[k]} min={min} max={max} step={step} onChange={(v) => patch.set('optics', { ...value.optics, [k]: v })} onReset={() => patch.set('optics', P.DEFAULT_ADJUST().optics)} />
+          <AdjSlider key={k} label={label} value={value.optics[k]} min={min} max={max} step={step} onChange={(v) => patch.set('optics', { ...value.optics, [k]: v })} onReset={() => patch.set('optics', P.DEFAULT_ADJUST().optics)} onCommit={commit} />
         ))}
         <div className="ped-lbl-row"><span>Perspective</span></div>
-        <AdjSlider label="X" value={value.optics.perspective.x} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, perspective: { ...value.optics.perspective, x: v } })} onReset={() => patch.set('optics', { ...value.optics, perspective: { x: 0, y: 0 } })} />
-        <AdjSlider label="Y" value={value.optics.perspective.y} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, perspective: { ...value.optics.perspective, y: v } })} onReset={() => patch.set('optics', { ...value.optics, perspective: { x: 0, y: 0 } })} />
+        <AdjSlider label="X" value={value.optics.perspective.x} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, perspective: { ...value.optics.perspective, x: v } })} onReset={() => patch.set('optics', { ...value.optics, perspective: { x: 0, y: 0 } })} onCommit={commit} />
+        <AdjSlider label="Y" value={value.optics.perspective.y} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, perspective: { ...value.optics.perspective, y: v } })} onReset={() => patch.set('optics', { ...value.optics, perspective: { x: 0, y: 0 } })} onCommit={commit} />
         <div className="ped-lbl-row"><span>Skew</span></div>
-        <AdjSlider label="X" value={value.optics.skew.x} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, skew: { ...value.optics.skew, x: v } })} onReset={() => patch.set('optics', { ...value.optics, skew: { x: 0, y: 0 } })} />
-        <AdjSlider label="Y" value={value.optics.skew.y} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, skew: { ...value.optics.skew, y: v } })} onReset={() => patch.set('optics', { ...value.optics, skew: { x: 0, y: 0 } })} />
+        <AdjSlider label="X" value={value.optics.skew.x} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, skew: { ...value.optics.skew, x: v } })} onReset={() => patch.set('optics', { ...value.optics, skew: { x: 0, y: 0 } })} onCommit={commit} />
+        <AdjSlider label="Y" value={value.optics.skew.y} min={-1} max={1} step={0.01} onChange={(v) => patch.set('optics', { ...value.optics, skew: { ...value.optics.skew, y: v } })} onReset={() => patch.set('optics', { ...value.optics, skew: { x: 0, y: 0 } })} onCommit={commit} />
       </ZExpando>
     </div>
   );
 }
-function CropPanel({ crop, setCrop, apply, setRatio, W, H }) {
+function CropPanel({ crop, setCrop, apply, setRatio, W, H, commit }) {
   return (
     <div className="ped-panel">
       <div className="ped-ai-row">
-        <button className={`btn btn-sm ${crop.on ? 'btn-primary' : ''}`} onClick={() => setCrop((c) => ({ ...c, on: !c.on }))}>{crop.on ? '✓ Crop guides on' : '✂️ Enable Crop'}</button>
-        <button className={`btn btn-sm ${crop.flipH ? 'btn-primary' : ''}`} onClick={() => setCrop((c) => ({ ...c, flipH: !c.flipH }))}>⇄ Flip H {crop.flipH ? '✓' : ''}</button>
-        <button className={`btn btn-sm ${crop.flipV ? 'btn-primary' : ''}`} onClick={() => setCrop((c) => ({ ...c, flipV: !c.flipV }))}>⇅ Flip V {crop.flipV ? '✓' : ''}</button>
+        <button className={`btn btn-sm ${crop.on ? 'btn-primary' : ''}`} onClick={() => { setCrop((c) => ({ ...c, on: !c.on })); commit(); }}>{crop.on ? '✓ Crop guides on' : '✂️ Enable Crop'}</button>
+        <button className={`btn btn-sm ${crop.flipH ? 'btn-primary' : ''}`} onClick={() => { setCrop((c) => ({ ...c, flipH: !c.flipH })); commit(); }}>⇄ Flip H {crop.flipH ? '✓' : ''}</button>
+        <button className={`btn btn-sm ${crop.flipV ? 'btn-primary' : ''}`} onClick={() => { setCrop((c) => ({ ...c, flipV: !c.flipV })); commit(); }}>⇅ Flip V {crop.flipV ? '✓' : ''}</button>
       </div>
       <div className="ped-lbl-row"><span>Ratio</span></div>
       <div className="ped-seg">{PRESET_RATIOS.map((r) => <button key={r.id} className={crop.ratio === r.id ? 'on' : ''} onClick={() => setRatio(r.id === 'free' ? null : r.id)}>{r.label}</button>)}</div>
       <div className="ped-exp-grid">
-        <label>X<input type="number" value={Math.round(crop.x)} onChange={(e) => setCrop((c) => ({ ...c, x: Math.max(0, Math.min(W - c.w, +e.target.value)) }))} /></label>
-        <label>Y<input type="number" value={Math.round(crop.y)} onChange={(e) => setCrop((c) => ({ ...c, y: Math.max(0, Math.min(H - c.h, +e.target.value)) }))} /></label>
-        <label>W<input type="number" value={Math.round(crop.w)} onChange={(e) => setCrop((c) => ({ ...c, w: Math.max(10, Math.min(W - c.x, +e.target.value)) }))} /></label>
-        <label>H<input type="number" value={Math.round(crop.h)} onChange={(e) => setCrop((c) => ({ ...c, h: Math.max(10, Math.min(H - c.y, +e.target.value)) }))} /></label>
+        <label>X<input type="number" value={Math.round(crop.x)} onChange={(e) => setCrop((c) => ({ ...c, x: Math.max(0, Math.min(W - c.w, +e.target.value)) }))} onBlur={commit} /></label>
+        <label>Y<input type="number" value={Math.round(crop.y)} onChange={(e) => setCrop((c) => ({ ...c, y: Math.max(0, Math.min(H - c.h, +e.target.value)) }))} onBlur={commit} /></label>
+        <label>W<input type="number" value={Math.round(crop.w)} onChange={(e) => setCrop((c) => ({ ...c, w: Math.max(10, Math.min(W - c.x, +e.target.value)) }))} onBlur={commit} /></label>
+        <label>H<input type="number" value={Math.round(crop.h)} onChange={(e) => setCrop((c) => ({ ...c, h: Math.max(10, Math.min(H - c.y, +e.target.value)) }))} onBlur={commit} /></label>
       </div>
       <div className="ped-ai-row">
-        <button className="btn btn-sm" onClick={() => setCrop((c) => { const n = (c.rot + 90) % 360; const sw = n === 90 || n === 270; return { ...c, rot: n, w: sw ? Math.min(c.h, H) : Math.min(c.w, W), h: sw ? Math.min(c.w, W) : Math.min(c.h, H) }; })}>↻ Rotate 90° ({crop.rot}°)</button>
-        <button className="btn btn-sm" onClick={() => setCrop((c) => ({ ...c, straighten: c.straighten >= 45 ? 0 : c.straighten + 15 }))}>⇽ Straighten {crop.straighten}°</button>
+        <button className="btn btn-sm" onClick={() => { setCrop((c) => { const n = (c.rot + 90) % 360; const sw = n === 90 || n === 270; return { ...c, rot: n, w: sw ? Math.min(c.h, H) : Math.min(c.w, W), h: sw ? Math.min(c.w, W) : Math.min(c.h, H) }; }); commit(); }}>↻ Rotate 90° ({crop.rot}°)</button>
+        <button className="btn btn-sm" onClick={() => { setCrop((c) => ({ ...c, straighten: c.straighten >= 45 ? 0 : c.straighten + 15 })); commit(); }}>⇽ Straighten {crop.straighten}°</button>
       </div>
       <button className="btn btn-primary" onClick={apply} disabled={!crop.on}>Apply Crop</button>
     </div>
@@ -1559,7 +1590,7 @@ function FiltersPanel({ filters, setFilters, takeSnap }) {
           {filters.map((f) => (
             <div key={f.id} className="ped-stack-row">
               <span>{P.FILTER_LOOKUP[f.id] ? P.FILTER_LOOKUP[f.id].name : f.id}</span>
-              <input type="range" min="0.05" max="1" step="0.05" value={f.intensity} onChange={(e) => setFilters((fs) => fs.map((x) => x.id === f.id ? { ...x, intensity: +e.target.value } : x))} />
+              <input type="range" min="0.05" max="1" step="0.05" value={f.intensity} onChange={(e) => setFilters((fs) => fs.map((x) => x.id === f.id ? { ...x, intensity: +e.target.value } : x))} onPointerUp={() => takeSnap('Filter intensity')} />
               <button className="ped-reset" onClick={() => setFilters((fs) => fs.filter((x) => x.id !== f.id))}>✕</button>
             </div>
           ))}
@@ -1590,7 +1621,7 @@ function EffectsPanel({ effects, setEffects, takeSnap }) {
         {effects.map((e) => (
           <div key={e.id} className="ped-stack-row">
             <span>{P.EFFECT_LOOKUP[e.id] ? P.EFFECT_LOOKUP[e.id].name : e.id} <b>{Math.round(e.intensity * 100)}%</b></span>
-            <input type="range" min="0.05" max="1" step="0.05" value={e.intensity} onChange={(ev) => setEffects((es) => es.map((x) => x.id === e.id ? { ...x, intensity: +ev.target.value } : x))} />
+            <input type="range" min="0.05" max="1" step="0.05" value={e.intensity} onChange={(ev) => setEffects((es) => es.map((x) => x.id === e.id ? { ...x, intensity: +ev.target.value } : x))} onPointerUp={() => takeSnap('Effect intensity')} />
             <button className="ped-reset" onClick={() => { takeSnap('Effect removed'); setEffects((es) => es.filter((x) => x.id !== e.id)); }}>✕</button>
           </div>
         ))}
@@ -1599,18 +1630,18 @@ function EffectsPanel({ effects, setEffects, takeSnap }) {
     </div>
   );
 }
-function VignettePanel({ value, patch, resetVg }) {
+function VignettePanel({ value, patch, resetVg, commit }) {
   const vg = value.optics.vignette;
   const setV = (k, v) => patch.set('optics', { ...value.optics, vignette: { ...vg, [k]: v } });
   return (
     <div className="ped-panel">
       <ZExpando label="Vignette" icon="◐">
-        <AdjSlider label="Amount" value={vg.amount} min={-100} max={100} step={1} onChange={(v) => setV('amount', v)} onReset={resetVg} />
-        <AdjSlider label="Size" value={vg.size} min={0.1} max={1} step={0.01} onChange={(v) => setV('size', v)} onReset={resetVg} />
-        <AdjSlider label="Feather" value={vg.feather} min={0.05} max={0.9} step={0.01} onChange={(v) => setV('feather', v)} onReset={resetVg} />
-        <AdjSlider label="Roundness" value={vg.roundness} min={-100} max={100} step={1} onChange={(v) => setV('roundness', v)} onReset={resetVg} />
-        <AdjSlider label="Highlight Priority" value={vg.highlights} min={0} max={100} step={1} onChange={(v) => setV('highlights', v)} onReset={resetVg} />
-        <button className="btn btn-sm" onClick={resetVg}>Reset Vignette</button>
+        <AdjSlider label="Amount" value={vg.amount} min={-100} max={100} step={1} onChange={(v) => setV('amount', v)} onReset={resetVg} onCommit={commit} />
+        <AdjSlider label="Size" value={vg.size} min={0.1} max={1} step={0.01} onChange={(v) => setV('size', v)} onReset={resetVg} onCommit={commit} />
+        <AdjSlider label="Feather" value={vg.feather} min={0.05} max={0.9} step={0.01} onChange={(v) => setV('feather', v)} onReset={resetVg} onCommit={commit} />
+        <AdjSlider label="Roundness" value={vg.roundness} min={-100} max={100} step={1} onChange={(v) => setV('roundness', v)} onReset={resetVg} onCommit={commit} />
+        <AdjSlider label="Highlight Priority" value={vg.highlights} min={0} max={100} step={1} onChange={(v) => setV('highlights', v)} onReset={resetVg} onCommit={commit} />
+        <button className="btn btn-sm" onClick={() => { resetVg(); commit(); }}>Reset Vignette</button>
       </ZExpando>
     </div>
   );
@@ -1754,16 +1785,16 @@ function StickersPanel({ add }) {
     </div>
   );
 }
-function PropsPanel({ sel, set }) {
+function PropsPanel({ sel, set, commit }) {
   if (!sel || !set) return <div className="ped-panel ped-empty-right"><span>Select an object on the canvas to edit its properties (opacity, blend mode, lock…).</span></div>;
   return (
     <div className="ped-panel">
       <div className="ped-sel-head">🎯 {sel.kind === 'text' ? 'Text' : sel.kind === 'shape' ? 'Shape' : 'Element'} Properties</div>
-      <AdjSlider label="Opacity" value={Math.round((sel.opacity ?? 1) * 100)} min={0} max={100} step={1} onChange={(v) => set({ opacity: v / 100 })} onReset={() => set({ opacity: 1 })} format={(v) => `${v}%`} />
-      <div className="ped-lbl-row"><span>Blend Mode</span><select value={sel.blend || 'normal'} onChange={(e) => set({ blend: e.target.value })}>{BLENDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
+      <AdjSlider label="Opacity" value={Math.round((sel.opacity ?? 1) * 100)} min={0} max={100} step={1} onChange={(v) => set({ opacity: v / 100 })} onReset={() => set({ opacity: 1 })} format={(v) => `${v}%`} onCommit={commit} />
+      <div className="ped-lbl-row"><span>Blend Mode</span><select value={sel.blend || 'normal'} onChange={(e) => { set({ blend: e.target.value }); commit(); }}>{BLENDS.map((b) => <option key={b} value={b}>{b}</option>)}</select></div>
       <div className="ped-ai-row">
-        <button className="btn btn-sm" onClick={() => set({ visible: false })}>Hide</button>
-        <button className="btn btn-sm" onClick={() => set({ locked: !sel.locked })}>{sel.locked ? '🔒 Unlock' : '🔓 Lock'}</button>
+        <button className="btn btn-sm" onClick={() => { set({ visible: false }); commit(); }}>Hide</button>
+        <button className="btn btn-sm" onClick={() => { set({ locked: !sel.locked }); commit(); }}>{sel.locked ? '🔒 Unlock' : '🔓 Lock'}</button>
       </div>
     </div>
   );
@@ -1787,16 +1818,16 @@ function LayersPanel({ items, setItems, add, selId, setSelId, takeSnap }) {
       <div className="ped-layer-list">
         {items.slice().reverse().map((it) => (
           <div key={it.id} className={`ped-layer ${selId === it.id ? 'on' : ''}`} onClick={() => setSelId(it.id)}>
-            <button className="ped-layer-eye" onClick={(e) => { e.stopPropagation(); setItems((a) => a.map((x) => x.id === it.id ? { ...x, visible: !x.visible } : x)); }}>{it.visible ? '👁' : '○'}</button>
+            <button className="ped-layer-eye" onClick={(e) => { e.stopPropagation(); setItems((a) => a.map((x) => x.id === it.id ? { ...x, visible: !x.visible } : x)); takeSnap('Layer visibility'); }}>{it.visible ? '👁' : '○'}</button>
             <span className="ped-layer-name">{name(it)}</span>
-            <select value={it.blend || 'normal'} onClick={(e) => e.stopPropagation()} onChange={(e) => setItems((a) => a.map((x) => x.id === it.id ? { ...x, blend: e.target.value } : x))}>{BLENDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
-            <input className="ped-layer-opacity" type="range" min="0" max="100" value={Math.round((it.opacity ?? 1) * 100)} onClick={(e) => e.stopPropagation()} onChange={(e) => setItems((a) => a.map((x) => x.id === it.id ? { ...x, opacity: +e.target.value / 100 } : x))} />
+            <select value={it.blend || 'normal'} onClick={(e) => e.stopPropagation()} onChange={(e) => { setItems((a) => a.map((x) => x.id === it.id ? { ...x, blend: e.target.value } : x)); takeSnap('Layer blend'); }}>{BLENDS.map((b) => <option key={b} value={b}>{b}</option>)}</select>
+            <input className="ped-layer-opacity" type="range" min="0" max="100" value={Math.round((it.opacity ?? 1) * 100)} onClick={(e) => e.stopPropagation()} onChange={(e) => setItems((a) => a.map((x) => x.id === it.id ? { ...x, opacity: +e.target.value / 100 } : x))} onPointerUp={() => takeSnap('Layer opacity')} />
             <div className="ped-layer-ops">
               <button title="Up" onClick={(e) => { e.stopPropagation(); move(it.id, 1); }}>↑</button>
               <button title="Down" onClick={(e) => { e.stopPropagation(); move(it.id, -1); }}>↓</button>
               <button title="Duplicate" onClick={(e) => { e.stopPropagation(); dup(it.id); }}>⧉</button>
               <button title="Rename" onClick={(e) => { e.stopPropagation(); ren(it.id); }}>✎</button>
-              <button title="Lock" onClick={(e) => { e.stopPropagation(); setItems((a) => a.map((x) => x.id === it.id ? { ...x, locked: !x.locked } : x)); }}>{it.locked ? '🔒' : '🔓'}</button>
+              <button title="Lock" onClick={(e) => { e.stopPropagation(); setItems((a) => a.map((x) => x.id === it.id ? { ...x, locked: !x.locked } : x)); takeSnap('Layer lock'); }}>{it.locked ? '🔒' : '🔓'}</button>
               <button title="Delete" onClick={(e) => { e.stopPropagation(); del(it.id); }}>🗑</button>
             </div>
           </div>
