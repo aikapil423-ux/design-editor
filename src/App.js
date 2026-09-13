@@ -187,13 +187,14 @@ function Shell() {
   const { view, settings, searchOpen } = useApp();
   const [sidebar, setSidebar] = useState(false);
   const Page = ROUTES[view.name] || Home;
+  const pageParams = view.name === 'video' ? { ...view.params, kind: 'video' } : view.params;
   return (
     <div className={`app theme-${settings.theme}`}>
       <Sidebar open={sidebar} setOpen={setSidebar} />
       <div className="main">
         <TopBar onMenu={() => setSidebar(true)} />
         <main className="content">
-          <Page key={view.name + JSON.stringify(view.params)} params={view.params} />
+          <Page key={view.name + JSON.stringify(view.params)} params={pageParams} />
         </main>
       </div>
       <BottomNav />
